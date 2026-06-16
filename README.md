@@ -53,3 +53,9 @@ The original Excel content is not stored in `"Data_Mining"`. Only fields require
 - `resource`
 - `cost`
 - `attrs` JSONB for object IDs and supporting attributes
+
+## Supabase Schema
+
+The Supabase schema is versioned in `supabase/migrations/20260616000100_process_mining_schema.sql`.
+
+This migration creates the `Data_Mining` analysis table plus the supporting `datasets`, `upload_sessions`, and `action_rules` tables. Do not commit `POSTGRES_URL` or database passwords to GitHub; keep them in Vercel Environment Variables.
