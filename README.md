@@ -35,13 +35,13 @@ Add environment variables in Vercel:
 - `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, your Supabase publishable key
 - `BLOB_READ_WRITE_TOKEN` optional, for storing original uploaded files
 
-Important: `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` are browser-safe public settings. They are not enough for this app's upload API because the API creates schema objects and inserts normalized event-log rows into `"Data_Mining"`. Keep `POSTGRES_URL` server-only and never expose it in client code.
+Important: `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` are browser-safe public settings. They are not enough for this app's upload API because the API creates schema objects and inserts normalized event-log rows into `"Data_mining"`. Keep `POSTGRES_URL` server-only and never expose it in client code.
 
 ## Data Flow
 
-Upload file -> parse rows -> preview mapping -> confirm -> store only normalized event-log fields in Supabase table `"Data_Mining"` -> analyze from Postgres.
+Upload file -> parse rows -> preview mapping -> confirm -> store only normalized event-log fields in Supabase table `"Data_mining"` -> analyze from Postgres.
 
-The original Excel content is not stored in `"Data_Mining"`. Only fields required for process mining are stored:
+The original Excel content is not stored in `"Data_mining"`. Only fields required for process mining are stored:
 
 - `dataset_id`
 - `dataset_name`
@@ -58,4 +58,4 @@ The original Excel content is not stored in `"Data_Mining"`. Only fields require
 
 The Supabase schema is versioned in `supabase/migrations/20260616000100_process_mining_schema.sql`.
 
-This migration creates the `Data_Mining` analysis table plus the supporting `datasets`, `upload_sessions`, and `action_rules` tables. Do not commit `POSTGRES_URL` or database passwords to GitHub; keep them in Vercel Environment Variables.
+This migration creates the `Data_mining` analysis table plus the supporting `datasets`, `upload_sessions`, and `action_rules` tables. Do not commit `POSTGRES_URL` or database passwords to GitHub; keep them in Vercel Environment Variables.

@@ -21,7 +21,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       attrs: Record<string, string>;
     }>(
       `select case_id, activity, event_ts, resource, cost, attrs
-       from "Data_Mining"
+       from "Data_mining"
        where dataset_id = $1
        order by case_id, event_ts`,
       [id],

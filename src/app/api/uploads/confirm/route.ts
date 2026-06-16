@@ -61,7 +61,7 @@ export async function POST(request: Request) {
     });
 
     await query(
-      `insert into "Data_Mining"
+      `insert into "Data_mining"
          (dataset_id, dataset_name, original_filename, row_number, case_id, activity, event_ts, resource, cost, attrs)
        values ${placeholders.join(",")}`,
       values,

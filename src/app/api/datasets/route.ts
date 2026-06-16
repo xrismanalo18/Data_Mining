@@ -11,7 +11,7 @@ export async function GET() {
               count(dm.id)::int as event_count,
               count(distinct dm.case_id)::int as case_count
        from datasets d
-       left join "Data_Mining" dm on dm.dataset_id = d.id
+       left join "Data_mining" dm on dm.dataset_id = d.id
        group by d.id
        order by d.created_at desc`,
     );
