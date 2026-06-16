@@ -30,7 +30,7 @@ vercel --prod
 
 Add environment variables in Vercel:
 
-- `POSTGRES_URL` from Supabase project settings. Use the pooled URI for serverless deployments when available, usually port `6543`. The app also accepts `DATABASE_URL` or `SUPABASE_POSTGRES_URL`.
+- `POSTGRES_URL` from Supabase project settings. Use the pooled URI for serverless deployments when available, usually port `6543`. The app also accepts `DATABASE_URL`, `SUPABASE_POSTGRES_URL`, `SUPABASE_DATABASE_URL`, `SUPABASE_DB_URL`, `POSTGRES_PRISMA_URL`, or `POSTGRES_URL_NON_POOLING`.
 - `NEXT_PUBLIC_SUPABASE_URL`, for example `https://hamwxevcyrukjbdptteb.supabase.co`
 - `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, your Supabase publishable key
 - `BLOB_READ_WRITE_TOKEN` optional, for storing original uploaded files

@@ -10,6 +10,10 @@ function getDatabaseConnectionString() {
     process.env.POSTGRES_URL ||
     process.env.DATABASE_URL ||
     process.env.SUPABASE_POSTGRES_URL ||
+    process.env.SUPABASE_DATABASE_URL ||
+    process.env.SUPABASE_DB_URL ||
+    process.env.POSTGRES_PRISMA_URL ||
+    process.env.POSTGRES_URL_NON_POOLING ||
     ""
   ).trim();
 }
@@ -32,7 +36,7 @@ export function getPool() {
   const connectionString = getDatabaseConnectionString();
   if (!connectionString) {
     throw new Error(
-      "Database connection is not configured. Set POSTGRES_URL to your Supabase pooled Postgres URI. " +
+      "Database connection is not configured. Set POSTGRES_URL to your Supabase pooled Postgres URI, or expose a compatible database URL such as DATABASE_URL, SUPABASE_POSTGRES_URL, SUPABASE_DATABASE_URL, SUPABASE_DB_URL, POSTGRES_PRISMA_URL, or POSTGRES_URL_NON_POOLING. " +
         "NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY are public client settings and cannot save uploads by themselves." +
         getSupabaseProjectHint(),
     );
