@@ -1,0 +1,136 @@
+:root {
+  --bg: #f4f1ea;
+  --panel: #fffdf7;
+  --ink: #182230;
+  --muted: #667085;
+  --line: #ded7c8;
+  --accent: #5b5f97;
+  --green: #2f855a;
+  --amber: #c47f17;
+  --red: #b42318;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+button, input, select { font: inherit; }
+.shell { min-height: 100vh; }
+.topbar {
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px 24px;
+  background: #24283b;
+  color: #fff;
+}
+.brand { font-weight: 900; letter-spacing: .01em; }
+.topbar nav { display: flex; gap: 12px; flex-wrap: wrap; }
+.topbar button {
+  border: 1px solid rgba(255,255,255,.18);
+  background: rgba(255,255,255,.08);
+  color: #fff;
+  border-radius: 8px;
+  padding: 8px 11px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+}
+main { max-width: 1480px; margin: 0 auto; padding: 22px; }
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow: 0 1px 3px rgba(24,34,48,.08);
+}
+h1 { margin: 0 0 5px; font-size: 24px; }
+h2 { margin: 0 0 12px; font-size: 16px; }
+h3 { margin: 0 0 8px; font-size: 13px; }
+p { color: var(--muted); line-height: 1.55; }
+.grid { display: grid; gap: 16px; }
+.cols { grid-template-columns: 1fr 1fr; }
+.kpis { grid-template-columns: repeat(6, minmax(140px, 1fr)); }
+.metric-label { color: var(--muted); font-size: 11px; font-weight: 850; text-transform: uppercase; letter-spacing: .04em; }
+.metric-value { font-size: 24px; font-weight: 900; margin-top: 6px; }
+.button {
+  border: 0;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 850;
+  cursor: pointer;
+}
+.button.secondary { background: #e9e2d3; color: var(--ink); }
+.button:disabled { opacity: .55; cursor: not-allowed; }
+input, select {
+  width: 100%;
+  border: 1px solid #cfc6b6;
+  border-radius: 8px;
+  padding: 10px 11px;
+  background: #fff;
+}
+label { display: block; color: #344054; font-size: 12px; font-weight: 850; margin: 10px 0 5px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { border-bottom: 1px solid var(--line); padding: 9px 8px; text-align: left; vertical-align: top; }
+th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.badge { display: inline-flex; border-radius: 999px; padding: 3px 8px; font-size: 11px; font-weight: 850; }
+.Critical, .High, .Needs { background: #fee4e2; color: #912018; }
+.Medium, .Watch { background: #fef0c7; color: #93370d; }
+.Low, .Healthy { background: #dcfae6; color: #05603a; }
+.analysis-shell { display: grid; grid-template-columns: 220px minmax(0,1fr); gap: 16px; align-items: start; }
+.analysis-menu {
+  position: sticky;
+  top: 16px;
+  display: grid;
+  gap: 7px;
+}
+.analysis-menu button {
+  display: flex;
+  justify-content: space-between;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #475467;
+  padding: 10px 11px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 850;
+  text-align: left;
+}
+.analysis-menu button.active { background: #ece6d9; color: var(--ink); }
+.map-wrap {
+  overflow: auto;
+  background: #fcfbf7;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.map-toolbar {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  padding: 10px 13px;
+  border-bottom: 1px solid var(--line);
+  background: #fff;
+  font-size: 12px;
+  font-weight: 800;
+}
+.path { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+.step { background: #efecff; color: #4c4f89; border: 1px solid #d7d2f0; padding: 4px 7px; border-radius: 7px; font-size: 11px; font-weight: 850; }
+.queue-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px; }
+.queue-pill { display: flex; justify-content: space-between; gap: 10px; border: 1px solid var(--line); background: #fff; border-radius: 8px; padding: 8px 10px; font-size: 11px; }
+.queue-pill strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queue-pill span { color: var(--accent); font-weight: 900; }
+.error { border-color: #fda29b; background: #fff4f2; color: #b42318; }
+@media (max-width: 1000px) {
+  .cols, .kpis, .analysis-shell { grid-template-columns: 1fr; }
+  main { padding: 14px; }
+  .analysis-menu { position: static; grid-template-columns: repeat(2, minmax(0,1fr)); }
+}
