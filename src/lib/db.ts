@@ -32,6 +32,18 @@ function getSupabaseProjectHint() {
   }
 }
 
+function normalizeConnectionString(connectionString: string) {
+  try {
+    const url = new URL(connectionString);
+    for (const param of ["sslmode", "sslcert", "sslkey", "sslrootcert"]) {
+      url.searchParams.delete(param);
+    }
+    return url.toString();
+  } catch {
+    return connectionString;
+  }
+}
+
 export function getPool() {
   const connectionString = getDatabaseConnectionString();
   if (!connectionString) {
@@ -43,9 +55,11 @@ export function getPool() {
   }
 
   if (!pool) {
+    const normalizedConnectionString = normalizeConnectionString(connectionString);
+    const isLocal = normalizedConnectionString.includes("localhost") || normalizedConnectionString.includes("127.0.0.1");
     pool = new Pool({
-      connectionString,
-      ssl: connectionString.includes("localhost") ? false : { rejectUnauthorized: false },
+      connectionString: normalizedConnectionString,
+      ssl: isLocal ? false : { rejectUnauthorized: false },
     });
   }
   return pool;
