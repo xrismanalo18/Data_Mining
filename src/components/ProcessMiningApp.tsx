@@ -390,7 +390,6 @@ function MapPanel({ analysis }: { analysis: Analysis }) {
           <div className="map-scaler" style={{ width: map.width * zoom, height: map.height * zoom }}>
             <div
               className="map-content"
-              style={{ transform: `scale(${zoom})` }}
               dangerouslySetInnerHTML={{ __html: map.svg }}
             />
           </div>
