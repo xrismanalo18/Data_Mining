@@ -138,7 +138,7 @@ tbody tr:hover { background: #f8fafc; }
 .analysis-menu button.active { background: var(--soft-blue); color: #1e3a8a; }
 .analysis-menu button.active span { color: #1d4ed8; }
 .map-wrap {
-  overflow: auto;
+  overflow: hidden;
   background: #f8fafc;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -152,6 +152,56 @@ tbody tr:hover { background: #f8fafc; }
   background: #fff;
   font-size: 12px;
   font-weight: 800;
+  flex-wrap: wrap;
+}
+.map-toolbar > span:last-of-type { margin-left: auto; }
+.map-zoom-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 4px;
+}
+.map-zoom-controls button {
+  min-width: 30px;
+  height: 30px;
+  border: 1px solid #cbd5e1;
+  border-radius: 7px;
+  background: #fff;
+  color: #1e293b;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 900;
+}
+.map-zoom-controls button:last-child {
+  min-width: 52px;
+  padding: 0 10px;
+}
+.map-zoom-controls button:disabled {
+  cursor: not-allowed;
+  opacity: .45;
+}
+.map-zoom-controls span {
+  min-width: 48px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+}
+.map-canvas {
+  height: clamp(430px, 58vh, 720px);
+  overflow: auto;
+}
+.map-scaler {
+  position: relative;
+}
+.map-content {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: top left;
+}
+.map-content svg {
+  max-width: none;
 }
 .path { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
 .step { background: var(--soft-blue); color: #1e3a8a; border: 1px solid #bfdbfe; padding: 4px 7px; border-radius: 7px; font-size: 11px; font-weight: 850; max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -353,9 +353,14 @@ function renderTab(tab: string, analysis: Analysis) {
 }
 
 function MapPanel({ analysis }: { analysis: Analysis }) {
-  const svg = useMemo(() => buildMapSvg(analysis), [analysis]);
+  const [zoom, setZoom] = useState(0.55);
+  const map = useMemo(() => buildMapSvg(analysis), [analysis]);
   const busiest = analysis.activities[0];
   const slowest = [...analysis.transitions].sort((a, b) => b.avgHours - a.avgHours)[0];
+  const zoomPercent = Math.round(zoom * 100);
+  const changeZoom = (amount: number) => {
+    setZoom(current => Math.min(1.8, Math.max(0.3, Number((current + amount).toFixed(2)))));
+  };
   return (
     <section className="card">
       <PanelHeader
@@ -369,14 +374,33 @@ function MapPanel({ analysis }: { analysis: Analysis }) {
         <Highlight label="Process complexity" value={`${analysis.variantCount.toLocaleString()} variants`} detail={`${analysis.activityCount.toLocaleString()} unique activities`} tone="purple" />
       </div>
       <div className="map-wrap">
-        <div className="map-toolbar"><strong>Flow view</strong><span>Queue movement</span><span>{analysis.activityCount} queues</span><span style={{ marginLeft: "auto" }}>{analysis.caseCount.toLocaleString()} cases</span></div>
-        <div dangerouslySetInnerHTML={{ __html: svg }} />
+        <div className="map-toolbar">
+          <strong>Flow view</strong>
+          <span>Queue movement</span>
+          <span>{analysis.activityCount} queues</span>
+          <span>{analysis.caseCount.toLocaleString()} cases</span>
+          <div className="map-zoom-controls" aria-label="Map zoom controls">
+            <button type="button" onClick={() => changeZoom(-0.15)} disabled={zoom <= 0.3} aria-label="Zoom out">-</button>
+            <span>{zoomPercent}%</span>
+            <button type="button" onClick={() => changeZoom(0.15)} disabled={zoom >= 1.8} aria-label="Zoom in">+</button>
+            <button type="button" onClick={() => setZoom(0.55)}>Reset</button>
+          </div>
+        </div>
+        <div className="map-canvas">
+          <div className="map-scaler" style={{ width: map.width * zoom, height: map.height * zoom }}>
+            <div
+              className="map-content"
+              style={{ transform: `scale(${zoom})` }}
+              dangerouslySetInnerHTML={{ __html: map.svg }}
+            />
+          </div>
+        </div>
       </div>
     </section>
   );
 }
 
-function buildMapSvg(analysis: Analysis) {
+function buildMapSvg(analysis: Analysis): { svg: string; width: number; height: number } {
   const transitions = analysis.transitions.slice(0, 80);
   const activities = [...new Set(transitions.flatMap(item => [item.from, item.to]))];
   const volume = new Map(analysis.activities.map(item => [item.name, item.count]));
@@ -414,7 +438,11 @@ function buildMapSvg(analysis: Analysis) {
       <text x="${x}" y="${y - 14}" text-anchor="middle" font-size="10" font-weight="900" fill="#182230">${count}</text>
       ${labels.has(activity) ? `<rect x="${x - 92}" y="${y + 15}" width="184" height="28" rx="7" fill="#FFFFFF" stroke="#BFDBFE" /><text x="${x}" y="${y + 34}" text-anchor="middle" font-size="8.5" font-weight="800" fill="#182230">${escapeHtml(label)}</text>` : ""}`;
   }).join("");
-  return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg" style="display:block;background:#F8FAFC">${edgeSvg}${nodeSvg}</svg>`;
+  return {
+    svg: `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg" style="display:block;background:#F8FAFC">${edgeSvg}${nodeSvg}</svg>`,
+    width,
+    height,
+  };
 }
 
 function Bottlenecks({ analysis }: { analysis: Analysis }) {
