@@ -414,6 +414,8 @@ function buildMapSvg(analysis: Analysis): { svg: string; width: number; height: 
   });
   const maxCount = Math.max(...transitions.map(item => item.count), 1);
   const maxWait = Math.max(...transitions.map(item => item.avgHours), 1);
+  const minWait = Math.min(...transitions.map(item => item.avgHours), maxWait);
+  const waitRange = Math.max(maxWait - minWait, 1);
   const labels = new Set(analysis.activities.slice(0, 16).map(item => item.name));
   const edgeSvg = transitions.map((transition, index) => {
     const [x1, y1] = positions.get(transition.from) || [0, 0];
@@ -422,12 +424,30 @@ function buildMapSvg(analysis: Analysis): { svg: string; width: number; height: 
     const cy = (y1 + y2) / 2 - 110 + (index % 3) * 70;
     const color = transition.avgHours < 24 ? "#2563EB" : transition.avgHours < 72 ? "#0F766E" : transition.avgHours < 168 ? "#D97706" : "#B42318";
     const pathId = `edge-${index}`;
-    const duration = 2.4 + (transition.avgHours / maxWait) * 13;
+    const duration = 1.8 + ((transition.avgHours - minWait) / waitRange) * 14;
+    const strokeWidth = 1 + transition.count / maxCount * 5;
+    const hitWidth = Math.max(14, strokeWidth + 10);
+    const tooltipX = Math.min(width - 282, Math.max(12, cx - 136));
+    const tooltipY = Math.min(height - 88, Math.max(12, cy - 78));
+    const transitionLabel = `${transition.from} to ${transition.to}`;
+    const countLabel = `${transition.count.toLocaleString()} transitions`;
+    const daysLabel = `Avg completion: ${formatMapDays(transition.avgHours)}`;
+    const title = `${transitionLabel} | ${countLabel} | ${daysLabel}`;
     return `
-      <path id="${pathId}" d="M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}" fill="none" stroke="${color}" stroke-width="${1 + transition.count / maxCount * 5}" opacity=".52" />
-      <circle r="${3 + transition.count / maxCount * 3}" fill="${color}" opacity=".92">
-        <animateMotion dur="${duration.toFixed(2)}s" repeatCount="indefinite"><mpath href="#${pathId}" /></animateMotion>
-      </circle>`;
+      <g class="map-edge">
+        <title>${escapeHtml(title)}</title>
+        <path class="map-edge-hit" d="M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}" fill="none" stroke="transparent" stroke-width="${hitWidth}" pointer-events="stroke" />
+        <path id="${pathId}" class="map-edge-line" d="M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}" fill="none" stroke="${color}" stroke-width="${strokeWidth}" opacity=".52" />
+        <circle r="${3 + transition.count / maxCount * 3}" fill="${color}" opacity=".92">
+          <animateMotion dur="${duration.toFixed(2)}s" repeatCount="indefinite"><mpath href="#${pathId}" /></animateMotion>
+        </circle>
+        <g class="edge-tooltip" transform="translate(${tooltipX} ${tooltipY})">
+          <rect width="270" height="70" rx="8" fill="#111827" opacity=".94" />
+          <text x="12" y="20" font-size="11" font-weight="900" fill="#FFFFFF">${escapeHtml(transitionLabel.length > 42 ? `${transitionLabel.slice(0, 39)}...` : transitionLabel)}</text>
+          <text x="12" y="41" font-size="10" font-weight="800" fill="#DBEAFE">${escapeHtml(countLabel)}</text>
+          <text x="12" y="58" font-size="10" font-weight="800" fill="#CBD5E1">${escapeHtml(daysLabel)}</text>
+        </g>
+      </g>`;
   }).join("");
   const nodeSvg = activities.map(activity => {
     const [x, y] = positions.get(activity) || [0, 0];
@@ -439,7 +459,7 @@ function buildMapSvg(analysis: Analysis): { svg: string; width: number; height: 
       ${labels.has(activity) ? `<rect x="${x - 92}" y="${y + 15}" width="184" height="28" rx="7" fill="#FFFFFF" stroke="#BFDBFE" /><text x="${x}" y="${y + 34}" text-anchor="middle" font-size="8.5" font-weight="800" fill="#182230">${escapeHtml(label)}</text>` : ""}`;
   }).join("");
   return {
-    svg: `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg" style="display:block;background:#F8FAFC">${edgeSvg}${nodeSvg}</svg>`,
+    svg: `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg" style="display:block;background:#F8FAFC"><style>.map-edge .edge-tooltip{opacity:0;pointer-events:none;transition:opacity .12s ease}.map-edge:hover .edge-tooltip{opacity:1}.map-edge:hover .map-edge-line{opacity:.88}</style>${edgeSvg}${nodeSvg}</svg>`,
     width,
     height,
   };
@@ -550,6 +570,12 @@ function countFor(tab: string, analysis: Analysis) {
 function formatHours(hours: number) {
   if (hours >= 48) return `${(hours / 24).toFixed(1)} days`;
   return `${hours.toFixed(1)} hrs`;
+}
+
+function formatMapDays(hours: number) {
+  const days = hours / 24;
+  if (days >= 1) return `${days.toFixed(1)} days`;
+  return `${hours.toFixed(1)} hours`;
 }
 
 function escapeHtml(value: string) {
