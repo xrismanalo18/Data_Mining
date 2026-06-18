@@ -47,6 +47,9 @@ export default function InteractiveClaimsExplorer({ cases: allCases }: { cases: 
   const [selectedCaseId, setSelectedCaseId] = useState(allCases[0]?.caseId || "");
   const [selectedStep, setSelectedStep] = useState<number | null>(null);
   const [loopsOnly, setLoopsOnly] = useState(false);
+  const [playing, setPlaying] = useState(true);
+  const [speed, setSpeed] = useState(1);
+  const [replayKey, setReplayKey] = useState(0);
 
   const cases = useMemo(() => {
     let result = allCases;
@@ -109,6 +112,16 @@ export default function InteractiveClaimsExplorer({ cases: allCases }: { cases: 
               <span><i className="legend-line waste" /> Loop waste</span>
               <span><i className="legend-line ideal" /> Straight</span>
             </div>
+            <div className="animation-controls" aria-label="Journey animation controls">
+              <button className={playing ? "active" : ""} onClick={() => setPlaying(current => !current)}>{playing ? "Pause" : "Play"}</button>
+              <select value={speed} onChange={event => setSpeed(Number(event.target.value))} aria-label="Animation speed">
+                <option value={0.5}>0.5x</option>
+                <option value={1}>1x</option>
+                <option value={1.5}>1.5x</option>
+                <option value={2}>2x</option>
+              </select>
+              <button onClick={() => setReplayKey(current => current + 1)} disabled={!selected?.loops.length}>Replay loops</button>
+            </div>
             <div className="canvas-zoom">
               <button onClick={() => changeZoom(-0.15)} disabled={zoom <= 0.35}>−</button>
               <span>{Math.round(zoom * 100)}%</span>
@@ -117,7 +130,7 @@ export default function InteractiveClaimsExplorer({ cases: allCases }: { cases: 
             </div>
           </div>
           {selected ? (
-            <ClaimJourneyGraph claim={selected} zoom={zoom} loopsOnly={loopsOnly} selectedStep={selectedStep} onSelectStep={setSelectedStep} />
+            <ClaimJourneyGraph claim={selected} zoom={zoom} loopsOnly={loopsOnly} selectedStep={selectedStep} onSelectStep={index => { setSelectedStep(index); setReplayKey(current => current + 1); }} playing={playing} speed={speed} replayKey={replayKey} />
           ) : <div className="empty-state explorer-empty">No claims match these filters.</div>}
         </div>
 
@@ -138,7 +151,7 @@ export default function InteractiveClaimsExplorer({ cases: allCases }: { cases: 
                 <span><small>Savings</small><strong>{formatSavings(selected.estimatedSavings, selected.hasCostData)}</strong><em>{selected.hasCostData ? `${selected.savingsRate.toFixed(1)}%` : ""}</em></span>
               </div>
               {selected.loops.length ? selected.loops.map((loop, index) => (
-                <button key={`${loop.activity}-${loop.fromIndex}`} className={selectedStep === loop.fromIndex ? "active" : ""} onClick={() => setSelectedStep(loop.fromIndex)}>
+                <button key={`${loop.activity}-${loop.fromIndex}`} className={selectedStep === loop.fromIndex ? "active" : ""} onClick={() => { setSelectedStep(loop.fromIndex); setReplayKey(current => current + 1); }}>
                   <span className="loop-index">{index + 1}</span>
                   <span><strong>{loop.activity}</strong><small>Step {loop.fromIndex + 1} back to {loop.toIndex + 1}</small></span>
                   <b>{formatHours(loop.wasteHours)}</b>
@@ -158,12 +171,18 @@ function ClaimJourneyGraph({
   loopsOnly,
   selectedStep,
   onSelectStep,
+  playing,
+  speed,
+  replayKey,
 }: {
   claim: ExplorerClaim;
   zoom: number;
   loopsOnly: boolean;
   selectedStep: number | null;
   onSelectStep: (index: number) => void;
+  playing: boolean;
+  speed: number;
+  replayKey: number;
 }) {
   const spacing = 155;
   const width = Math.max(1160, 180 + claim.steps.length * spacing);
@@ -176,7 +195,7 @@ function ClaimJourneyGraph({
   return (
     <div className="journey-viewport">
       <div className="journey-scaler" style={{ width: width * zoom, height: height * zoom }}>
-        <svg className="journey-graph" width={width} height={height} viewBox={`0 0 ${width} ${height}`} style={{ transform: `scale(${zoom})` }}>
+        <svg key={`${claim.caseId}-${replayKey}`} className={`journey-graph ${playing ? "is-playing" : "is-paused"}`} width={width} height={height} viewBox={`0 0 ${width} ${height}`} style={{ transform: `scale(${zoom})` }}>
           <defs>
             <marker id="arrow-normal" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#2563eb" /></marker>
             <marker id="arrow-waste" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#dc2626" /></marker>
@@ -187,7 +206,10 @@ function ClaimJourneyGraph({
 
           {!loopsOnly && claim.steps.slice(0, -1).map((_, index) => (
             <g key={`edge-${index}`}>
-              <line x1={nodeX(index) + 48} y1={actualY} x2={nodeX(index + 1) - 48} y2={actualY} className="journey-edge" markerEnd="url(#arrow-normal)" />
+              <path id={`forward-${index}`} d={`M ${nodeX(index) + 48} ${actualY} L ${nodeX(index + 1) - 48} ${actualY}`} className="journey-edge" markerEnd="url(#arrow-normal)" />
+              <circle className="flow-token forward-token" r="5">
+                <animateMotion dur={`${Math.max(0.8, 2.2 / speed)}s`} begin={`${index * 0.22}s`} repeatCount="indefinite"><mpath href={`#forward-${index}`} /></animateMotion>
+              </circle>
               <text x={(nodeX(index) + nodeX(index + 1)) / 2} y={actualY - 12} className="edge-time">{formatCompactHours(claim.steps[index + 1].waitHours)}</text>
             </g>
           ))}
@@ -198,7 +220,10 @@ function ClaimJourneyGraph({
             const arcY = Math.max(58, 115 - index * 18);
             return (
               <g key={`loop-${loop.fromIndex}`} className={selectedStep === loop.fromIndex ? "selected-loop" : ""} onClick={() => onSelectStep(loop.fromIndex)}>
-                <path d={`M ${fromX} ${actualY - 38} C ${fromX} ${arcY}, ${toX} ${arcY}, ${toX} ${actualY - 38}`} className="loop-edge" markerEnd="url(#arrow-waste)" />
+                <path id={`loop-path-${loop.fromIndex}`} d={`M ${fromX} ${actualY - 38} C ${fromX} ${arcY}, ${toX} ${arcY}, ${toX} ${actualY - 38}`} className="loop-edge" markerEnd="url(#arrow-waste)" />
+                <circle className="flow-token loop-token" r={selectedStep === loop.fromIndex ? 8 : 6}>
+                  <animateMotion dur={`${Math.max(1.1, (3.5 + index * .35) / speed)}s`} begin={`${index * .45}s`} repeatCount="indefinite"><mpath href={`#loop-path-${loop.fromIndex}`} /></animateMotion>
+                </circle>
                 <rect x={(fromX + toX) / 2 - 46} y={arcY - 16} width="92" height="24" rx="12" className="loop-time-bg" />
                 <text x={(fromX + toX) / 2} y={arcY + 1} className="loop-time">{formatCompactHours(loop.wasteHours)} waste</text>
               </g>
