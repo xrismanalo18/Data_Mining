@@ -2,6 +2,8 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
+import DeepDiveSolution, { type ClaimsAnalysis } from "@/components/DeepDiveSolution";
+
 type Dataset = {
   id: string;
   name: string;
@@ -51,6 +53,7 @@ type Analysis = {
   reworkPaths: PathItem[];
   objects: { name: string; count: number }[];
   recommendations: { severity: string; title: string; detail: string }[];
+  claims: ClaimsAnalysis;
 };
 
 type PathItem = {
@@ -70,6 +73,7 @@ type DatasetDetail = {
 };
 
 const tabs = [
+  ["deep-dive", "Deep Dive Solution"],
   ["map", "Process Map"],
   ["bottlenecks", "Bottlenecks"],
   ["paths", "Path Analysis"],
@@ -343,6 +347,7 @@ function Kpi({ label, value, detail, tone }: { label: string; value: string; det
 }
 
 function renderTab(tab: string, analysis: Analysis) {
+  if (tab === "deep-dive") return <DeepDiveSolution analysis={analysis} />;
   if (tab === "map") return <MapPanel analysis={analysis} />;
   if (tab === "bottlenecks") return <Bottlenecks analysis={analysis} />;
   if (tab === "paths") return <Paths analysis={analysis} />;
@@ -557,6 +562,7 @@ function Highlight({ label, value, detail, tone }: { label: string; value: strin
 }
 
 function countFor(tab: string, analysis: Analysis) {
+  if (tab === "deep-dive") return analysis.claims.exceptionClaims;
   if (tab === "map") return analysis.activityCount;
   if (tab === "bottlenecks") return analysis.bottlenecks.length;
   if (tab === "paths") return analysis.pathAnalysis.length;

@@ -16,6 +16,68 @@ export type Mapping = {
   [key: string]: string | undefined;
 };
 
+export type ClaimCaseInsight = {
+  caseId: string;
+  status: string;
+  durationHours: number;
+  eventCount: number;
+  manualTouches: number;
+  reassignments: number;
+  repeatedSteps: number;
+  currentOwner: string;
+  stp: boolean;
+  exception: boolean;
+  lpi: number;
+  path: string[];
+};
+
+export type ClaimsAnalysis = {
+  completedClaims: number;
+  exceptionClaims: number;
+  exceptionRate: number;
+  stpClaims: number;
+  stpRate: number;
+  manualClaims: number;
+  manualTouchRate: number;
+  reassignedClaims: number;
+  reassignmentRate: number;
+  totalReassignments: number;
+  avgStpHours: number;
+  avgManualHours: number;
+  cycleTimeReductionHours: number;
+  currentLpi: number;
+  projectedLpi: number;
+  lpiReduction: number;
+  lpiReductionRate: number;
+  lpiDrivers: {
+    name: string;
+    currentPoints: number;
+    reductionPoints: number;
+    detail: string;
+  }[];
+  stpBlockers: {
+    name: string;
+    claims: number;
+    share: number;
+    detail: string;
+  }[];
+  reassignmentRoutes: {
+    from: string;
+    to: string;
+    count: number;
+    avgDelayHours: number;
+  }[];
+  ownerWorkload: {
+    owner: string;
+    events: number;
+    claims: number;
+    reassignedIn: number;
+    reassignedOut: number;
+  }[];
+  caseInsights: ClaimCaseInsight[];
+  methodology: string[];
+};
+
 const commonObjects = [
   "order_id",
   "purchase_order_id",
@@ -208,6 +270,8 @@ export function analyze(events: EventRow[]) {
     };
   }).sort((a, b) => b.count - a.count);
 
+  const claims = analyzeClaims(cases, durations);
+
   return {
     caseCount: cases.size,
     eventCount: events.length,
@@ -232,6 +296,175 @@ export function analyze(events: EventRow[]) {
     reworkPaths: [...pathAnalysis].sort((a, b) => b.repeatedSteps - a.repeatedSteps || b.count - a.count).slice(0, 8),
     objects: objects.entries().slice(0, 30).map(([name, count]) => ({ name, count })),
     recommendations: recommendations(average(durations), cases.size ? reworkCases / cases.size * 100 : 0, bottlenecks),
+    claims,
+  };
+}
+
+function analyzeClaims(cases: Map<string, EventRow[]>, durations: number[]): ClaimsAnalysis {
+  const manualPattern = /manual|review|investigat|pend|exception|adjust|adjudicat|appeal|audit|correct|validate|verify|approval/i;
+  const terminalPattern = /complete|payment|closed|paid|settled|approved|denied|reject/i;
+  const routePattern = /reassign|transfer|reroute|handoff/i;
+  const durationReference = Math.max(percentile(durations, 0.9), average(durations), 1);
+  const routeCounter = new Map<string, { count: number; delays: number[] }>();
+  const ownerStats = new Map<string, { events: number; claims: Set<string>; reassignedIn: number; reassignedOut: number }>();
+  const driverTotals = { duration: 0, manual: 0, reassignment: 0, rework: 0, incomplete: 0 };
+  const insights: ClaimCaseInsight[] = [];
+  let completedClaims = 0;
+  let exceptionClaims = 0;
+  let stpClaims = 0;
+  let manualClaims = 0;
+  let reassignedClaims = 0;
+  let totalReassignments = 0;
+
+  for (const [caseId, list] of cases) {
+    const path = list.map(event => event.activity);
+    const durationHours = list.length > 1 ? hoursBetween(list[0].timestamp, list[list.length - 1].timestamp) : 0;
+    const repeatedSteps = path.length - new Set(path).size;
+    const manualTouches = path.filter(activity => manualPattern.test(activity)).length;
+    const completed = path.some(activity => terminalPattern.test(activity));
+    const explicitRoutes = path.filter(activity => routePattern.test(activity)).length;
+    let resourceChanges = 0;
+    let previousOwner = "";
+
+    for (const event of list) {
+      const owner = event.resource?.trim() || "";
+      if (!owner) continue;
+      const stats = ownerStats.get(owner) || { events: 0, claims: new Set<string>(), reassignedIn: 0, reassignedOut: 0 };
+      stats.events += 1;
+      stats.claims.add(caseId);
+      ownerStats.set(owner, stats);
+
+      if (previousOwner && previousOwner !== owner) {
+        resourceChanges += 1;
+        const key = `${previousOwner}|||${owner}`;
+        const route = routeCounter.get(key) || { count: 0, delays: [] };
+        route.count += 1;
+        route.delays.push(hoursBetween(list[Math.max(0, list.indexOf(event) - 1)].timestamp, event.timestamp));
+        routeCounter.set(key, route);
+        const fromStats = ownerStats.get(previousOwner);
+        if (fromStats) fromStats.reassignedOut += 1;
+        stats.reassignedIn += 1;
+      }
+      previousOwner = owner;
+    }
+
+    const reassignments = Math.max(resourceChanges, explicitRoutes);
+    const manual = manualTouches > 0;
+    const stp = completed && !manual && reassignments === 0 && repeatedSteps === 0;
+    const exception = manual || reassignments > 0 || repeatedSteps > 0 || durationHours >= durationReference;
+    const durationPoints = Math.min(35, durationHours / durationReference * 35);
+    const manualPoints = manual ? Math.min(20, 8 + manualTouches * 4) : 0;
+    const reassignmentPoints = Math.min(20, reassignments * 8);
+    const reworkPoints = Math.min(15, repeatedSteps * 5);
+    const incompletePoints = completed ? 0 : 10;
+    const lpi = durationPoints + manualPoints + reassignmentPoints + reworkPoints + incompletePoints;
+
+    driverTotals.duration += durationPoints;
+    driverTotals.manual += manualPoints;
+    driverTotals.reassignment += reassignmentPoints;
+    driverTotals.rework += reworkPoints;
+    driverTotals.incomplete += incompletePoints;
+    if (completed) completedClaims += 1;
+    if (exception) exceptionClaims += 1;
+    if (stp) stpClaims += 1;
+    if (manual) manualClaims += 1;
+    if (reassignments > 0) reassignedClaims += 1;
+    totalReassignments += reassignments;
+
+    insights.push({
+      caseId,
+      status: stp ? "Straight-through" : exception ? "Exception" : completed ? "Standard" : "Open",
+      durationHours,
+      eventCount: list.length,
+      manualTouches,
+      reassignments,
+      repeatedSteps,
+      currentOwner: [...list].reverse().find(event => event.resource?.trim())?.resource || "Unassigned",
+      stp,
+      exception,
+      lpi,
+      path,
+    });
+  }
+
+  const caseCount = Math.max(cases.size, 1);
+  const avgDriver = {
+    duration: driverTotals.duration / caseCount,
+    manual: driverTotals.manual / caseCount,
+    reassignment: driverTotals.reassignment / caseCount,
+    rework: driverTotals.rework / caseCount,
+    incomplete: driverTotals.incomplete / caseCount,
+  };
+  const reductionRates = { duration: 0.3, manual: 0.25, reassignment: 0.5, rework: 0.4, incomplete: 0.15 };
+  const currentLpi = Object.values(avgDriver).reduce((sum, value) => sum + value, 0);
+  const lpiReduction =
+    avgDriver.duration * reductionRates.duration +
+    avgDriver.manual * reductionRates.manual +
+    avgDriver.reassignment * reductionRates.reassignment +
+    avgDriver.rework * reductionRates.rework +
+    avgDriver.incomplete * reductionRates.incomplete;
+  const projectedLpi = Math.max(0, currentLpi - lpiReduction);
+  const stpDurations = insights.filter(item => item.stp).map(item => item.durationHours);
+  const manualDurations = insights.filter(item => !item.stp).map(item => item.durationHours);
+  const blockerRows = [
+    { name: "Manual review", claims: manualClaims, detail: "Claim path includes review, validation, investigation, adjustment, or another manual-control activity." },
+    { name: "Case reassignment", claims: reassignedClaims, detail: "Ownership changed or the path contains an assignment, routing, transfer, or handoff activity." },
+    { name: "Rework loop", claims: insights.filter(item => item.repeatedSteps > 0).length, detail: "One or more activities repeat within the same claim." },
+    { name: "Extended cycle time", claims: insights.filter(item => item.durationHours >= durationReference).length, detail: `Claim duration is at or above the observed P90 reference of ${formatHours(durationReference)}.` },
+  ].filter(item => item.claims > 0);
+
+  const lpiDrivers = [
+    { name: "Cycle-time exposure", currentPoints: avgDriver.duration, reductionPoints: avgDriver.duration * reductionRates.duration, detail: "30% improvement scenario on duration-related LPI." },
+    { name: "Manual intervention", currentPoints: avgDriver.manual, reductionPoints: avgDriver.manual * reductionRates.manual, detail: "25% improvement scenario through higher straight-through processing." },
+    { name: "Case reassignment", currentPoints: avgDriver.reassignment, reductionPoints: avgDriver.reassignment * reductionRates.reassignment, detail: "50% improvement scenario through ownership and routing controls." },
+    { name: "Rework loops", currentPoints: avgDriver.rework, reductionPoints: avgDriver.rework * reductionRates.rework, detail: "40% improvement scenario through first-time-right handling." },
+    { name: "Incomplete outcomes", currentPoints: avgDriver.incomplete, reductionPoints: avgDriver.incomplete * reductionRates.incomplete, detail: "15% improvement scenario for claims without a detected terminal event." },
+  ].sort((a, b) => b.reductionPoints - a.reductionPoints);
+
+  return {
+    completedClaims,
+    exceptionClaims,
+    exceptionRate: exceptionClaims / caseCount * 100,
+    stpClaims,
+    stpRate: stpClaims / caseCount * 100,
+    manualClaims,
+    manualTouchRate: manualClaims / caseCount * 100,
+    reassignedClaims,
+    reassignmentRate: reassignedClaims / caseCount * 100,
+    totalReassignments,
+    avgStpHours: average(stpDurations),
+    avgManualHours: average(manualDurations),
+    cycleTimeReductionHours: Math.max(0, average(manualDurations) - average(stpDurations)),
+    currentLpi,
+    projectedLpi,
+    lpiReduction,
+    lpiReductionRate: currentLpi ? lpiReduction / currentLpi * 100 : 0,
+    lpiDrivers,
+    stpBlockers: blockerRows.map(item => ({ ...item, share: item.claims / caseCount * 100 })),
+    reassignmentRoutes: [...routeCounter.entries()]
+      .map(([key, value]) => {
+        const [from, to] = key.split("|||");
+        return { from, to, count: value.count, avgDelayHours: average(value.delays) };
+      })
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 20),
+    ownerWorkload: [...ownerStats.entries()]
+      .map(([owner, value]) => ({
+        owner,
+        events: value.events,
+        claims: value.claims.size,
+        reassignedIn: value.reassignedIn,
+        reassignedOut: value.reassignedOut,
+      }))
+      .sort((a, b) => b.claims - a.claims)
+      .slice(0, 25),
+    caseInsights: insights.sort((a, b) => b.lpi - a.lpi).slice(0, 250),
+    methodology: [
+      "Straight-through claims have a detected terminal outcome with no manual-control activity, reassignment, or repeated step.",
+      "Reassignment uses resource changes when owners are mapped, plus explicit assignment, route, transfer, and handoff activities.",
+      "LPI is a lower-is-better operational index composed of cycle time (35 points), manual intervention (20), reassignment (20), rework (15), and incomplete outcome (10).",
+      "Projected LPI applies transparent improvement scenarios to each driver and expresses the opportunity exclusively as LPI reduction.",
+    ],
   };
 }
 
