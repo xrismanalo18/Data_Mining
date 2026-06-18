@@ -29,6 +29,24 @@ export type ClaimCaseInsight = {
   exception: boolean;
   lpi: number;
   path: string[];
+  straightPath: string[];
+  loopWasteHours: number;
+  loopLpiPoints: number;
+  steps: {
+    activity: string;
+    timestamp: string;
+    owner: string;
+    waitHours: number;
+    isLoop: boolean;
+    loopBackIndex: number | null;
+  }[];
+  loops: {
+    activity: string;
+    fromIndex: number;
+    toIndex: number;
+    wasteHours: number;
+    lpiPoints: number;
+  }[];
 };
 
 export type ClaimsAnalysis = {
@@ -318,6 +336,7 @@ function analyzeClaims(cases: Map<string, EventRow[]>, durations: number[]): Cla
 
   for (const [caseId, list] of cases) {
     const path = list.map(event => event.activity);
+    const straightPath = path.filter((activity, index) => path.indexOf(activity) === index);
     const durationHours = list.length > 1 ? hoursBetween(list[0].timestamp, list[list.length - 1].timestamp) : 0;
     const repeatedSteps = path.length - new Set(path).size;
     const manualTouches = path.filter(activity => manualPattern.test(activity)).length;
@@ -358,6 +377,31 @@ function analyzeClaims(cases: Map<string, EventRow[]>, durations: number[]): Cla
     const reworkPoints = Math.min(15, repeatedSteps * 5);
     const incompletePoints = completed ? 0 : 10;
     const lpi = durationPoints + manualPoints + reassignmentPoints + reworkPoints + incompletePoints;
+    const loops: ClaimCaseInsight["loops"] = [];
+    const steps: ClaimCaseInsight["steps"] = list.map((event, index) => {
+      const loopBackIndex = path.slice(0, index).lastIndexOf(event.activity);
+      const isLoop = loopBackIndex >= 0;
+      const waitHours = index ? hoursBetween(list[index - 1].timestamp, event.timestamp) : 0;
+      if (isLoop) {
+        const wasteHours = hoursBetween(list[loopBackIndex].timestamp, event.timestamp);
+        loops.push({
+          activity: event.activity,
+          fromIndex: index,
+          toIndex: loopBackIndex,
+          wasteHours,
+          lpiPoints: Math.min(15, 5 + wasteHours / durationReference * 10),
+        });
+      }
+      return {
+        activity: event.activity,
+        timestamp: event.timestamp,
+        owner: event.resource?.trim() || "Unassigned",
+        waitHours,
+        isLoop,
+        loopBackIndex: isLoop ? loopBackIndex : null,
+      };
+    });
+    const loopWasteHours = Math.min(durationHours, loops.reduce((sum, loop) => sum + loop.wasteHours, 0));
 
     driverTotals.duration += durationPoints;
     driverTotals.manual += manualPoints;
@@ -384,6 +428,11 @@ function analyzeClaims(cases: Map<string, EventRow[]>, durations: number[]): Cla
       exception,
       lpi,
       path,
+      straightPath,
+      loopWasteHours,
+      loopLpiPoints: reworkPoints,
+      steps,
+      loops,
     });
   }
 

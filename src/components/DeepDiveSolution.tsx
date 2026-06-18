@@ -2,6 +2,8 @@
 
 import { useMemo, useState } from "react";
 
+import InteractiveClaimsExplorer from "@/components/InteractiveClaimsExplorer";
+
 type PathItem = {
   path: string[];
   count: number;
@@ -81,6 +83,24 @@ export type ClaimsAnalysis = {
     exception: boolean;
     lpi: number;
     path: string[];
+    straightPath: string[];
+    loopWasteHours: number;
+    loopLpiPoints: number;
+    steps: {
+      activity: string;
+      timestamp: string;
+      owner: string;
+      waitHours: number;
+      isLoop: boolean;
+      loopBackIndex: number | null;
+    }[];
+    loops: {
+      activity: string;
+      fromIndex: number;
+      toIndex: number;
+      wasteHours: number;
+      lpiPoints: number;
+    }[];
   }[];
   methodology: string[];
 };
@@ -115,7 +135,7 @@ export default function DeepDiveSolution({ analysis }: { analysis: ProcessAnalys
         ))}
       </div>
       {view === "executive" && <ExecutiveDashboard analysis={analysis} />}
-      {view === "explorer" && <ClaimsExplorer analysis={analysis} />}
+      {view === "explorer" && <InteractiveClaimsExplorer cases={analysis.claims.caseInsights} />}
       {view === "stp" && <StraightThrough analysis={analysis} />}
       {view === "reassignment" && <CaseReassignment analysis={analysis} />}
     </section>
