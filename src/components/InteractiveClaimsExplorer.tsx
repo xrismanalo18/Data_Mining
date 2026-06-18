@@ -14,6 +14,11 @@ export type ExplorerClaim = {
   stp: boolean;
   exception: boolean;
   lpi: number;
+  caseCost: number;
+  hasCostData: boolean;
+  estimatedSavings: number;
+  savingsRate: number;
+  loopSavings: number;
   path: string[];
   straightPath: string[];
   loopWasteHours: number;
@@ -49,7 +54,7 @@ export default function InteractiveClaimsExplorer({ cases: allCases }: { cases: 
     if (filter === "exception") result = result.filter(item => item.exception);
     if (filter === "reassigned") result = result.filter(item => item.reassignments > 0);
     if (filter === "rework") result = result.filter(item => item.repeatedSteps > 0);
-    if (filter === "high-lpi") result = result.filter(item => item.lpi >= 45);
+    if (filter === "high-savings") result = result.filter(item => item.hasCostData && item.savingsRate >= 25);
     const term = search.trim().toLowerCase();
     if (term) result = result.filter(item => item.caseId.toLowerCase().includes(term) || item.path.some(step => step.toLowerCase().includes(term)));
     return result;
@@ -58,6 +63,9 @@ export default function InteractiveClaimsExplorer({ cases: allCases }: { cases: 
   const selected = cases.find(item => item.caseId === selectedCaseId) || cases[0] || null;
   const loopClaims = cases.filter(item => item.repeatedSteps > 0);
   const loopHours = loopClaims.reduce((sum, item) => sum + item.loopWasteHours, 0);
+  const loopSavings = loopClaims.reduce((sum, item) => sum + item.loopSavings, 0);
+  const loopCost = loopClaims.reduce((sum, item) => sum + item.caseCost, 0);
+  const loopCostAvailable = loopClaims.some(item => item.hasCostData);
   const visibleActivities = new Set(cases.flatMap(item => item.path)).size;
 
   function changeZoom(amount: number) {
@@ -74,7 +82,7 @@ export default function InteractiveClaimsExplorer({ cases: allCases }: { cases: 
             ["exception", "Exceptions"],
             ["reassigned", "Reassigned"],
             ["rework", "Loops"],
-            ["high-lpi", "High LPI"],
+            ["high-savings", "High savings"],
           ].map(([id, label]) => <button key={id} className={filter === id ? "active" : ""} onClick={() => setFilter(id)}>{label}</button>)}
         </div>
         <input className="explorer-search" value={search} onChange={event => setSearch(event.target.value)} placeholder="Claim or activity" aria-label="Search claim or activity" />
@@ -86,7 +94,7 @@ export default function InteractiveClaimsExplorer({ cases: allCases }: { cases: 
         <ExplorerMetric label="Activities" value={visibleActivities.toLocaleString()} />
         <ExplorerMetric label="Loop claims" value={loopClaims.length.toLocaleString()} danger />
         <ExplorerMetric label="Loop time" value={formatHours(loopHours)} danger />
-        <ExplorerMetric label="LPI exposed" value={loopClaims.reduce((sum, item) => sum + item.loopLpiPoints, 0).toFixed(1)} danger />
+        <ExplorerMetric label="Loop savings" value={formatSavings(loopSavings, loopCostAvailable)} detail={loopCostAvailable && loopCost ? `${(loopSavings / loopCost * 100).toFixed(1)}%` : undefined} danger />
       </section>
 
       <section className="explorer-workspace">
@@ -127,7 +135,7 @@ export default function InteractiveClaimsExplorer({ cases: allCases }: { cases: 
               <div className="inspector-kpis">
                 <span><small>Cycle</small><strong>{formatHours(selected.durationHours)}</strong></span>
                 <span><small>Loop waste</small><strong>{formatHours(selected.loopWasteHours)}</strong></span>
-                <span><small>LPI</small><strong>{selected.lpi.toFixed(1)}</strong></span>
+                <span><small>Savings</small><strong>{formatSavings(selected.estimatedSavings, selected.hasCostData)}</strong><em>{selected.hasCostData ? `${selected.savingsRate.toFixed(1)}%` : ""}</em></span>
               </div>
               {selected.loops.length ? selected.loops.map((loop, index) => (
                 <button key={`${loop.activity}-${loop.fromIndex}`} className={selectedStep === loop.fromIndex ? "active" : ""} onClick={() => setSelectedStep(loop.fromIndex)}>
@@ -228,8 +236,8 @@ function ClaimJourneyGraph({
   );
 }
 
-function ExplorerMetric({ label, value, danger }: { label: string; value: string; danger?: boolean }) {
-  return <div className={danger ? "explorer-metric danger" : "explorer-metric"}><span>{label}</span><strong>{value}</strong></div>;
+function ExplorerMetric({ label, value, detail, danger }: { label: string; value: string; detail?: string; danger?: boolean }) {
+  return <div className={danger ? "explorer-metric danger" : "explorer-metric"}><span>{label}</span><strong>{value}</strong>{detail && <small>{detail}</small>}</div>;
 }
 
 function shortLabel(value: string, length: number) {
@@ -245,4 +253,9 @@ function formatHours(hours: number) {
   if (!Number.isFinite(hours) || hours <= 0) return "0.0 hrs";
   if (hours >= 48) return `${(hours / 24).toFixed(1)} days`;
   return `${hours.toFixed(1)} hrs`;
+}
+
+function formatSavings(amount: number, available: boolean) {
+  if (!available) return "Cost data required";
+  return amount.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 }

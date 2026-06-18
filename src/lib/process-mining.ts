@@ -28,6 +28,11 @@ export type ClaimCaseInsight = {
   stp: boolean;
   exception: boolean;
   lpi: number;
+  caseCost: number;
+  hasCostData: boolean;
+  estimatedSavings: number;
+  savingsRate: number;
+  loopSavings: number;
   path: string[];
   straightPath: string[];
   loopWasteHours: number;
@@ -67,10 +72,18 @@ export type ClaimsAnalysis = {
   projectedLpi: number;
   lpiReduction: number;
   lpiReductionRate: number;
+  hasCostData: boolean;
+  costCoverageRate: number;
+  currentCostExposure: number;
+  projectedCost: number;
+  estimatedSavings: number;
+  savingsRate: number;
   lpiDrivers: {
     name: string;
     currentPoints: number;
     reductionPoints: number;
+    savingsAmount: number;
+    savingsRate: number;
     detail: string;
   }[];
   stpBlockers: {
@@ -333,6 +346,8 @@ function analyzeClaims(cases: Map<string, EventRow[]>, durations: number[]): Cla
   let manualClaims = 0;
   let reassignedClaims = 0;
   let totalReassignments = 0;
+  let casesWithCost = 0;
+  let currentCostExposure = 0;
 
   for (const [caseId, list] of cases) {
     const path = list.map(event => event.activity);
@@ -377,6 +392,18 @@ function analyzeClaims(cases: Map<string, EventRow[]>, durations: number[]): Cla
     const reworkPoints = Math.min(15, repeatedSteps * 5);
     const incompletePoints = completed ? 0 : 10;
     const lpi = durationPoints + manualPoints + reassignmentPoints + reworkPoints + incompletePoints;
+    const costValues = list.map(event => event.cost).filter((cost): cost is number => cost !== null && Number.isFinite(cost));
+    const hasCostData = costValues.length > 0;
+    const caseCost = Math.max(...costValues, 0);
+    const reductionPoints =
+      durationPoints * 0.3 +
+      manualPoints * 0.25 +
+      reassignmentPoints * 0.5 +
+      reworkPoints * 0.4 +
+      incompletePoints * 0.15;
+    const savingsRate = lpi ? Math.min(1, reductionPoints / lpi) * 100 : 0;
+    const estimatedSavings = hasCostData ? caseCost * savingsRate / 100 : 0;
+    const loopSavings = hasCostData && lpi ? caseCost * (reworkPoints * 0.4 / lpi) : 0;
     const loops: ClaimCaseInsight["loops"] = [];
     const steps: ClaimCaseInsight["steps"] = list.map((event, index) => {
       const loopBackIndex = path.slice(0, index).lastIndexOf(event.activity);
@@ -414,6 +441,10 @@ function analyzeClaims(cases: Map<string, EventRow[]>, durations: number[]): Cla
     if (manual) manualClaims += 1;
     if (reassignments > 0) reassignedClaims += 1;
     totalReassignments += reassignments;
+    if (hasCostData) {
+      casesWithCost += 1;
+      currentCostExposure += caseCost;
+    }
 
     insights.push({
       caseId,
@@ -427,6 +458,11 @@ function analyzeClaims(cases: Map<string, EventRow[]>, durations: number[]): Cla
       stp,
       exception,
       lpi,
+      caseCost,
+      hasCostData,
+      estimatedSavings,
+      savingsRate,
+      loopSavings,
       path,
       straightPath,
       loopWasteHours,
@@ -453,6 +489,10 @@ function analyzeClaims(cases: Map<string, EventRow[]>, durations: number[]): Cla
     avgDriver.rework * reductionRates.rework +
     avgDriver.incomplete * reductionRates.incomplete;
   const projectedLpi = Math.max(0, currentLpi - lpiReduction);
+  const hasCostData = casesWithCost > 0;
+  const savingsRate = currentLpi ? lpiReduction / currentLpi * 100 : 0;
+  const estimatedSavings = hasCostData ? currentCostExposure * savingsRate / 100 : 0;
+  const projectedCost = Math.max(0, currentCostExposure - estimatedSavings);
   const stpDurations = insights.filter(item => item.stp).map(item => item.durationHours);
   const manualDurations = insights.filter(item => !item.stp).map(item => item.durationHours);
   const blockerRows = [
@@ -463,12 +503,16 @@ function analyzeClaims(cases: Map<string, EventRow[]>, durations: number[]): Cla
   ].filter(item => item.claims > 0);
 
   const lpiDrivers = [
-    { name: "Cycle-time exposure", currentPoints: avgDriver.duration, reductionPoints: avgDriver.duration * reductionRates.duration, detail: "30% improvement scenario on duration-related LPI." },
-    { name: "Manual intervention", currentPoints: avgDriver.manual, reductionPoints: avgDriver.manual * reductionRates.manual, detail: "25% improvement scenario through higher straight-through processing." },
-    { name: "Case reassignment", currentPoints: avgDriver.reassignment, reductionPoints: avgDriver.reassignment * reductionRates.reassignment, detail: "50% improvement scenario through ownership and routing controls." },
-    { name: "Rework loops", currentPoints: avgDriver.rework, reductionPoints: avgDriver.rework * reductionRates.rework, detail: "40% improvement scenario through first-time-right handling." },
-    { name: "Incomplete outcomes", currentPoints: avgDriver.incomplete, reductionPoints: avgDriver.incomplete * reductionRates.incomplete, detail: "15% improvement scenario for claims without a detected terminal event." },
-  ].sort((a, b) => b.reductionPoints - a.reductionPoints);
+    { name: "Cycle-time exposure", currentPoints: avgDriver.duration, reductionPoints: avgDriver.duration * reductionRates.duration, detail: "30% cycle-time improvement scenario applied to mapped cost exposure." },
+    { name: "Manual intervention", currentPoints: avgDriver.manual, reductionPoints: avgDriver.manual * reductionRates.manual, detail: "25% manual-effort improvement scenario through higher straight-through processing." },
+    { name: "Case reassignment", currentPoints: avgDriver.reassignment, reductionPoints: avgDriver.reassignment * reductionRates.reassignment, detail: "50% reassignment improvement scenario through ownership and routing controls." },
+    { name: "Rework loops", currentPoints: avgDriver.rework, reductionPoints: avgDriver.rework * reductionRates.rework, detail: "40% rework improvement scenario through first-time-right handling." },
+    { name: "Incomplete outcomes", currentPoints: avgDriver.incomplete, reductionPoints: avgDriver.incomplete * reductionRates.incomplete, detail: "15% completion improvement scenario for claims without a detected terminal event." },
+  ].map(driver => ({
+    ...driver,
+    savingsAmount: hasCostData && lpiReduction ? estimatedSavings * driver.reductionPoints / lpiReduction : 0,
+    savingsRate: currentLpi ? driver.reductionPoints / currentLpi * 100 : 0,
+  })).sort((a, b) => b.reductionPoints - a.reductionPoints);
 
   return {
     completedClaims,
@@ -488,6 +532,12 @@ function analyzeClaims(cases: Map<string, EventRow[]>, durations: number[]): Cla
     projectedLpi,
     lpiReduction,
     lpiReductionRate: currentLpi ? lpiReduction / currentLpi * 100 : 0,
+    hasCostData,
+    costCoverageRate: casesWithCost / caseCount * 100,
+    currentCostExposure,
+    projectedCost,
+    estimatedSavings,
+    savingsRate,
     lpiDrivers,
     stpBlockers: blockerRows.map(item => ({ ...item, share: item.claims / caseCount * 100 })),
     reassignmentRoutes: [...routeCounter.entries()]
@@ -507,12 +557,13 @@ function analyzeClaims(cases: Map<string, EventRow[]>, durations: number[]): Cla
       }))
       .sort((a, b) => b.claims - a.claims)
       .slice(0, 25),
-    caseInsights: insights.sort((a, b) => b.lpi - a.lpi).slice(0, 250),
+    caseInsights: insights.sort((a, b) => b.estimatedSavings - a.estimatedSavings || b.lpi - a.lpi).slice(0, 250),
     methodology: [
       "Straight-through claims have a detected terminal outcome with no manual-control activity, reassignment, or repeated step.",
       "Reassignment uses resource changes when owners are mapped, plus explicit assignment, route, transfer, and handoff activities.",
-      "LPI is a lower-is-better operational index composed of cycle time (35 points), manual intervention (20), reassignment (20), rework (15), and incomplete outcome (10).",
-      "Projected LPI applies transparent improvement scenarios to each driver and expresses the opportunity exclusively as LPI reduction.",
+      "Savings use the mapped cost field only. Datasets without usable cost values do not receive an invented dollar estimate.",
+      "Cost exposure uses the highest mapped cost value per claim to avoid multiplying a claim amount repeated across event rows.",
+      "The savings percentage is the internal process-improvement ratio applied to mapped cost exposure; dollar savings are an operational estimate, not booked financial results.",
     ],
   };
 }

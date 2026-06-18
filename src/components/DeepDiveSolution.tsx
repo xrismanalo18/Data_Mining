@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 
 import InteractiveClaimsExplorer from "@/components/InteractiveClaimsExplorer";
 
@@ -45,10 +45,18 @@ export type ClaimsAnalysis = {
   projectedLpi: number;
   lpiReduction: number;
   lpiReductionRate: number;
+  hasCostData: boolean;
+  costCoverageRate: number;
+  currentCostExposure: number;
+  projectedCost: number;
+  estimatedSavings: number;
+  savingsRate: number;
   lpiDrivers: {
     name: string;
     currentPoints: number;
     reductionPoints: number;
+    savingsAmount: number;
+    savingsRate: number;
     detail: string;
   }[];
   stpBlockers: {
@@ -82,6 +90,11 @@ export type ClaimsAnalysis = {
     stp: boolean;
     exception: boolean;
     lpi: number;
+    caseCost: number;
+    hasCostData: boolean;
+    estimatedSavings: number;
+    savingsRate: number;
+    loopSavings: number;
     path: string[];
     straightPath: string[];
     loopWasteHours: number;
@@ -121,12 +134,12 @@ export default function DeepDiveSolution({ analysis }: { analysis: ProcessAnalys
         <div>
           <div className="section-kicker">Claims process intelligence</div>
           <h2>Deep Dive Solution</h2>
-          <p>Executive insight, claim-flow exploration, straight-through processing, reassignment control, and LPI reduction—calculated from the selected uploaded dataset.</p>
+          <p>Executive insight, claim-flow exploration, straight-through processing, reassignment control, and estimated savings—calculated from the selected uploaded dataset.</p>
         </div>
         <div className="lpi-hero">
-          <span>Projected LPI reduction</span>
-          <strong>{analysis.claims.lpiReduction.toFixed(1)} pts</strong>
-          <small>{analysis.claims.lpiReductionRate.toFixed(1)}% improvement opportunity</small>
+          <span>Estimated savings</span>
+          <strong>{formatSavings(analysis.claims.estimatedSavings, analysis.claims.hasCostData)}</strong>
+          <small>{analysis.claims.hasCostData ? `${analysis.claims.savingsRate.toFixed(1)}% of mapped cost` : "Map a cost field to calculate"}</small>
         </div>
       </div>
       <div className="deep-dive-nav" role="tablist" aria-label="Deep Dive Solution views">
@@ -153,26 +166,26 @@ function ExecutiveDashboard({ analysis }: { analysis: ProcessAnalysis }) {
         <DeepKpi label="STP rate" value={`${claims.stpRate.toFixed(1)}%`} detail={`${claims.stpClaims.toLocaleString()} straight-through claims`} tone="green" />
         <DeepKpi label="Exception rate" value={`${claims.exceptionRate.toFixed(1)}%`} detail={`${claims.exceptionClaims.toLocaleString()} claims require attention`} tone="red" />
         <DeepKpi label="Reassignment rate" value={`${claims.reassignmentRate.toFixed(1)}%`} detail={`${claims.totalReassignments.toLocaleString()} detected handoffs`} tone="amber" />
-        <DeepKpi label="Current LPI" value={claims.currentLpi.toFixed(1)} detail="Lower is better" tone="purple" />
-        <DeepKpi label="Projected LPI" value={claims.projectedLpi.toFixed(1)} detail={`Down ${claims.lpiReduction.toFixed(1)} points`} tone="teal" />
+        <DeepKpi label="Cost exposure" value={formatSavings(claims.currentCostExposure, claims.hasCostData)} detail={claims.hasCostData ? `${claims.costCoverageRate.toFixed(1)}% claim coverage` : "Cost data required"} tone="purple" />
+        <DeepKpi label="Estimated savings" value={formatSavings(claims.estimatedSavings, claims.hasCostData)} detail={claims.hasCostData ? `${claims.savingsRate.toFixed(1)}% opportunity` : "Cost data required"} tone="teal" />
       </section>
 
       <section className="grid cols">
         <div className="card">
-          <DeepHeader kicker="Executive focus" title="Claims Performance Outlook" detail="The strongest operational signals and their expected effect on LPI." />
+          <DeepHeader kicker="Executive focus" title="Claims Performance Outlook" detail="The strongest operational signals and their estimated financial opportunity." />
           <div className="executive-findings">
-            <ExecutiveFinding label="Primary LPI driver" value={topDriver?.name || "No material driver"} detail={topDriver ? `${topDriver.currentPoints.toFixed(1)} current points; ${topDriver.reductionPoints.toFixed(1)} points addressable.` : "No driver was detected."} />
+            <ExecutiveFinding label="Primary savings driver" value={topDriver?.name || "No material driver"} detail={topDriver ? `${formatSavings(topDriver.savingsAmount, claims.hasCostData)} estimated savings (${topDriver.savingsRate.toFixed(1)}%).` : "No driver was detected."} />
             <ExecutiveFinding label="Top STP blocker" value={topBlocker?.name || "No blocker detected"} detail={topBlocker ? `${topBlocker.claims.toLocaleString()} claims (${topBlocker.share.toFixed(1)}%).` : "Current paths meet the STP rules."} />
             <ExecutiveFinding label="Cycle-time opportunity" value={formatHours(claims.cycleTimeReductionHours)} detail={`STP averages ${formatHours(claims.avgStpHours)} versus ${formatHours(claims.avgManualHours)} for non-STP claims.`} />
           </div>
         </div>
         <div className="card">
-          <DeepHeader kicker="LPI reduction" title="Reduction by Driver" detail="Projected improvement is expressed exclusively as LPI reduction points." />
+          <DeepHeader kicker="Savings opportunity" title="Estimated Savings by Driver" detail={claims.hasCostData ? "Dollar savings and percentage are based on mapped claim-cost exposure." : "Map a cost field during upload to calculate dollar savings."} />
           <div className="driver-list">
             {claims.lpiDrivers.map(driver => (
               <div className="driver-row" key={driver.name}>
                 <div><strong>{driver.name}</strong><span>{driver.detail}</span></div>
-                <div className="driver-numbers"><b>-{driver.reductionPoints.toFixed(1)}</b><span>of {driver.currentPoints.toFixed(1)} pts</span></div>
+                <div className="driver-numbers"><b>{formatSavings(driver.savingsAmount, claims.hasCostData)}</b><span>{claims.hasCostData ? `${driver.savingsRate.toFixed(1)}% of exposure` : "Cost data required"}</span></div>
                 <div className="bar"><i style={{ width: `${Math.min(100, driver.currentPoints ? driver.reductionPoints / driver.currentPoints * 100 : 0)}%` }} /></div>
               </div>
             ))}
@@ -181,86 +194,10 @@ function ExecutiveDashboard({ analysis }: { analysis: ProcessAnalysis }) {
       </section>
 
       <section className="card">
-        <DeepHeader kicker="Priority claims" title="Highest LPI Cases" detail="Claims are ranked by cycle time, manual intervention, reassignment, rework, and incomplete outcome exposure." />
+        <DeepHeader kicker="Priority claims" title="Highest Savings Opportunities" detail="Claims are ranked by estimated savings, process delay, manual intervention, reassignment, and rework." />
         <CaseTable cases={claims.caseInsights.slice(0, 12)} />
       </section>
       <Methodology items={claims.methodology} />
-    </div>
-  );
-}
-
-function ClaimsExplorer({ analysis }: { analysis: ProcessAnalysis }) {
-  const [filter, setFilter] = useState("all");
-  const cases = useMemo(() => {
-    if (filter === "stp") return analysis.claims.caseInsights.filter(item => item.stp);
-    if (filter === "exception") return analysis.claims.caseInsights.filter(item => item.exception);
-    if (filter === "reassigned") return analysis.claims.caseInsights.filter(item => item.reassignments > 0);
-    if (filter === "rework") return analysis.claims.caseInsights.filter(item => item.repeatedSteps > 0);
-    return analysis.claims.caseInsights;
-  }, [analysis.claims.caseInsights, filter]);
-  const topPath = analysis.pathAnalysis[0];
-  const transitions = [...analysis.transitions].sort((a, b) => b.count - a.count).slice(0, 12);
-
-  return (
-    <div className="grid deep-section">
-      <section className="card">
-        <DeepHeader kicker="How the claims process works" title="Claims Process Explorer" detail="Each node is an activity and each connector is an observed handoff. Volume shows frequency; color shows average waiting-time severity." />
-        <div className="explorer-controls">
-          {[
-            ["all", "All claims"],
-            ["stp", "Straight-through"],
-            ["exception", "Exceptions"],
-            ["reassigned", "Reassigned"],
-            ["rework", "Rework"],
-          ].map(([id, label]) => <button key={id} className={filter === id ? "active" : ""} onClick={() => setFilter(id)}>{label}</button>)}
-          <span>{cases.length.toLocaleString()} visible claims</span>
-        </div>
-        {topPath ? (
-          <div className="claim-flow">
-            {topPath.path.slice(0, 9).map((step, index) => (
-              <div className="claim-flow-step" key={`${step}-${index}`}>
-                <span>{index + 1}</span><strong>{step}</strong>
-                {index < Math.min(topPath.path.length, 9) - 1 && <i aria-hidden="true">→</i>}
-              </div>
-            ))}
-          </div>
-        ) : <div className="empty-state">No claim path is available.</div>}
-        <div className="flow-caption">
-          <strong>Dominant path</strong>
-          <span>{topPath ? `${topPath.count.toLocaleString()} claims · ${topPath.share.toFixed(1)}% share · ${formatHours(topPath.avgHours)} average` : "No path data"}</span>
-        </div>
-      </section>
-
-      <section className="grid cols">
-        <div className="card">
-          <DeepHeader kicker="Observed handoffs" title="High-Volume Connections" detail="The most frequently traveled links in the uploaded claims process." />
-          <div className="connection-list">
-            {transitions.map(item => (
-              <div className="connection-row" key={`${item.from}-${item.to}`}>
-                <span className={`severity-dot ${waitTone(item.avgHours)}`} />
-                <div><strong>{item.from} → {item.to}</strong><span>{item.count.toLocaleString()} transitions</span></div>
-                <b>{formatHours(item.avgHours)}</b>
-              </div>
-            ))}
-          </div>
-        </div>
-        <div className="card">
-          <DeepHeader kicker="Variant behavior" title="Top Claim Variants" detail="Compare dominant routes, duration, and repeated work." />
-          <div className="variant-list">
-            {analysis.pathAnalysis.slice(0, 8).map((path, index) => (
-              <div className="variant-row" key={index}>
-                <span className="variant-rank">{index + 1}</span>
-                <div><strong>{path.path.slice(0, 4).join(" → ")}{path.path.length > 4 ? "…" : ""}</strong><span>{path.count} claims · {path.share.toFixed(1)}% · {path.repeatedSteps} loops</span></div>
-                <b>{formatHours(path.avgHours)}</b>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-      <section className="card">
-        <DeepHeader kicker="Filtered evidence" title="Claim-Level Explorer" detail="Use the filters above to isolate the process behavior behind each outcome." />
-        <CaseTable cases={cases.slice(0, 30)} />
-      </section>
     </div>
   );
 }
@@ -274,7 +211,7 @@ function StraightThrough({ analysis }: { analysis: ProcessAnalysis }) {
         <DeepKpi label="STP claims" value={claims.stpClaims.toLocaleString()} detail={`${claims.stpRate.toFixed(1)}% of analyzed claims`} tone="green" />
         <DeepKpi label="Non-STP claims" value={(analysis.caseCount - claims.stpClaims).toLocaleString()} detail={`${(100 - claims.stpRate).toFixed(1)}% require intervention`} tone="red" />
         <DeepKpi label="STP cycle time" value={formatHours(claims.avgStpHours)} detail={`Non-STP: ${formatHours(claims.avgManualHours)}`} tone="blue" />
-        <DeepKpi label="LPI reduction opportunity" value={`${claims.lpiReduction.toFixed(1)} pts`} detail={`${claims.lpiReductionRate.toFixed(1)}% projected`} tone="purple" />
+        <DeepKpi label="Estimated savings" value={formatSavings(claims.estimatedSavings, claims.hasCostData)} detail={claims.hasCostData ? `${claims.savingsRate.toFixed(1)}% projected` : "Cost data required"} tone="purple" />
       </section>
       <section className="grid cols">
         <div className="card">
@@ -327,7 +264,7 @@ function CaseReassignment({ analysis }: { analysis: ProcessAnalysis }) {
         <DeepKpi label="Reassigned claims" value={claims.reassignedClaims.toLocaleString()} detail={`${claims.reassignmentRate.toFixed(1)}% of claims`} tone="amber" />
         <DeepKpi label="Owner handoffs" value={claims.totalReassignments.toLocaleString()} detail="Detected changes and routing events" tone="red" />
         <DeepKpi label="Active owners" value={claims.ownerWorkload.length.toLocaleString()} detail="From the mapped resource field" tone="blue" />
-        <DeepKpi label="Reassignment LPI" value={`${claims.lpiDrivers.find(item => item.name === "Case reassignment")?.currentPoints.toFixed(1) || "0.0"} pts`} detail="Current average contribution" tone="purple" />
+        <DeepKpi label="Reassignment savings" value={formatSavings(claims.lpiDrivers.find(item => item.name === "Case reassignment")?.savingsAmount || 0, claims.hasCostData)} detail={claims.hasCostData ? `${(claims.lpiDrivers.find(item => item.name === "Case reassignment")?.savingsRate || 0).toFixed(1)}% opportunity` : "Cost data required"} tone="purple" />
       </section>
 
       <section className="grid cols">
@@ -349,7 +286,7 @@ function CaseReassignment({ analysis }: { analysis: ProcessAnalysis }) {
           <DeepHeader kicker="What-if control" title="Reassignment Simulator" detail="Test a routing decision in this browser session. Nothing here is written to PostgreSQL." />
           <label>Exception claim</label>
           <select value={selectedCase} onChange={event => setSelectedCase(event.target.value)}>
-            {candidates.map(item => <option key={item.caseId} value={item.caseId}>{item.caseId} · LPI {item.lpi.toFixed(1)} · {item.currentOwner}</option>)}
+            {candidates.map(item => <option key={item.caseId} value={item.caseId}>{item.caseId} · {formatSavings(item.estimatedSavings, item.hasCostData)} · {item.currentOwner}</option>)}
           </select>
           <label>Proposed owner</label>
           <select value={selectedOwner} onChange={event => setSelectedOwner(event.target.value)}>
@@ -379,12 +316,12 @@ function CaseTable({ cases }: { cases: ClaimsAnalysis["caseInsights"] }) {
   if (!cases.length) return <div className="empty-state"><strong>No claims match this view</strong><p>Try another filter or confirm the uploaded activity and resource mappings.</p></div>;
   return (
     <div className="table-scroll">
-      <table><thead><tr><th>Claim</th><th>Status</th><th>Current owner</th><th>Duration</th><th>Manual</th><th>Reassign</th><th>Loops</th><th>LPI</th></tr></thead><tbody>
+      <table><thead><tr><th>Claim</th><th>Status</th><th>Current owner</th><th>Duration</th><th>Manual</th><th>Reassign</th><th>Loops</th><th>Est. savings</th><th>Savings %</th></tr></thead><tbody>
         {cases.map(item => (
           <tr key={item.caseId}>
             <td><strong>{item.caseId}</strong><div className="case-path">{item.path.slice(0, 3).join(" → ")}{item.path.length > 3 ? "…" : ""}</div></td>
             <td><span className={`badge ${item.stp ? "Healthy" : item.exception ? "High" : "Watch"}`}>{item.status}</span></td>
-            <td>{item.currentOwner}</td><td>{formatHours(item.durationHours)}</td><td>{item.manualTouches}</td><td>{item.reassignments}</td><td>{item.repeatedSteps}</td><td><strong>{item.lpi.toFixed(1)}</strong></td>
+            <td>{item.currentOwner}</td><td>{formatHours(item.durationHours)}</td><td>{item.manualTouches}</td><td>{item.reassignments}</td><td>{item.repeatedSteps}</td><td><strong>{formatSavings(item.estimatedSavings, item.hasCostData)}</strong></td><td>{item.hasCostData ? `${item.savingsRate.toFixed(1)}%` : "—"}</td>
           </tr>
         ))}
       </tbody></table>
@@ -419,4 +356,9 @@ function formatHours(hours: number) {
   if (!Number.isFinite(hours) || hours <= 0) return "0.0 hrs";
   if (hours >= 48) return `${(hours / 24).toFixed(1)} days`;
   return `${hours.toFixed(1)} hrs`;
+}
+
+function formatSavings(amount: number, available: boolean) {
+  if (!available) return "Cost data required";
+  return amount.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 }
