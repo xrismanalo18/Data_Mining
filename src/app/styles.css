@@ -222,6 +222,72 @@ tbody tr:hover { background: #f8fafc; }
 .error { border: 1px solid #fda29b; background: #fff4f2; color: #b42318; }
 .form-actions { margin-top: 14px; }
 .mapping-card { margin-top: 16px; }
+.contract-analyzer { display: grid; gap: 16px; margin-top: 16px; }
+.contract-analyzer-intro {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(360px, .8fr);
+  gap: 24px;
+  align-items: center;
+}
+.contract-analyzer-intro p { margin: 0; }
+.contract-analyzer-intro form { display: flex; gap: 10px; align-items: center; }
+.contract-analyzer-intro input { min-width: 0; }
+.contract-analyzer-intro .button { white-space: nowrap; }
+.deal-health-card { padding: 20px; }
+.deal-health-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(180px, auto);
+  gap: 22px;
+  align-items: center;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+}
+.deal-health-header p { margin: 0; }
+.deal-score-ring {
+  width: 126px;
+  height: 126px;
+  display: grid;
+  place-content: center;
+  text-align: center;
+  border: 10px solid #dbeafe;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+.deal-score-ring strong { display: block; font-size: 34px; line-height: 1; }
+.deal-score-ring span { color: var(--muted); font-size: 12px; font-weight: 800; }
+.deal-score-ring.score-Critical, .deal-score-ring.score-High { border-color: #fda29b; }
+.deal-score-ring.score-Watch { border-color: #fedf89; }
+.deal-score-ring.score-Healthy { border-color: #75e0a7; }
+.deal-health-verdict { display: grid; gap: 7px; justify-items: start; }
+.deal-health-verdict strong { font-size: 14px; }
+.deal-health-verdict small { color: var(--muted); font-weight: 750; }
+.deal-health-kpis {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  margin: 18px 0;
+}
+.deal-health-kpis > div {
+  display: grid;
+  gap: 5px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fafc;
+  padding: 12px;
+}
+.deal-health-kpis span { color: var(--muted); font-size: 10px; font-weight: 900; text-transform: uppercase; }
+.deal-health-kpis strong { font-size: 20px; }
+.deal-health-kpis small { color: var(--muted); font-size: 11px; }
+.deal-health-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
+.health-distribution, .driver-list { display: grid; gap: 9px; }
+.health-band-row { display: grid; grid-template-columns: 88px minmax(0, 1fr) 40px; gap: 9px; align-items: center; font-size: 12px; }
+.health-band-row > div, .driver-list div > div { height: 8px; overflow: hidden; border-radius: 999px; background: #e2e8f0; }
+.health-band-row i, .driver-list i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--teal), var(--accent)); }
+.health-band-row strong { text-align: right; }
+.driver-list > div { display: grid; grid-template-columns: minmax(160px, .8fr) minmax(0, 1fr); gap: 9px; align-items: center; font-size: 12px; }
+.deal-table-wrap { overflow: auto; max-height: 430px; border: 1px solid var(--line); border-radius: 8px; }
+.deal-table-wrap th { position: sticky; top: 0; z-index: 1; }
 .summary-row { display: flex; flex-wrap: wrap; gap: 10px; color: var(--muted); font-size: 13px; margin-bottom: 12px; }
 .summary-row span { border: 1px solid var(--line); background: #f8fafc; border-radius: 8px; padding: 6px 9px; }
 .subsection-title { margin-top: 18px; }
@@ -888,7 +954,9 @@ tbody tr:hover { background: #f8fafc; }
 .straight-state span { color: #4d7c5b; font-size: 10px; }
 .explorer-empty { margin: 24px; }
 @media (max-width: 1000px) {
-  .cols, .kpis, .analysis-shell, .workspace-grid, .highlight-grid, .deep-kpis, .deep-kpis.four { grid-template-columns: 1fr; }
+  .cols, .kpis, .analysis-shell, .workspace-grid, .highlight-grid, .deep-kpis, .deep-kpis.four, .contract-analyzer-intro, .deal-health-header, .deal-health-grid { grid-template-columns: 1fr; }
+  .contract-analyzer-intro form { align-items: stretch; flex-direction: column; }
+  .deal-health-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   main { padding: 14px; }
   .analysis-menu { position: static; grid-template-columns: repeat(2, minmax(0,1fr)); }
   .analysis-hero { display: grid; }

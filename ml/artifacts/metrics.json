@@ -1,0 +1,35 @@
+{
+  "dataset": {
+    "rows": 1000,
+    "featuresBeforeEncoding": 47,
+    "trainingRows": 800,
+    "testingRows": 200,
+    "testSize": 0.2,
+    "randomState": 42
+  },
+  "model": {
+    "mae": 2.921447294235229,
+    "rmse": 3.663721684654061,
+    "r2": 0.9548856240794147
+  },
+  "baseline": {
+    "mae": 14.649315000000001,
+    "rmse": 17.298507957696813,
+    "r2": -0.005743641239241981
+  },
+  "maeImprovementPct": 80.05744777666922,
+  "crossValidation": {
+    "folds": 5,
+    "bestMeanMae": 2.896826893568039,
+    "bestParameters": {
+      "model__subsample": 1.0,
+      "model__reg_lambda": 1.0,
+      "model__reg_alpha": 0.05,
+      "model__n_estimators": 350,
+      "model__min_child_weight": 1,
+      "model__max_depth": 3,
+      "model__learning_rate": 0.04,
+      "model__colsample_bytree": 0.7
+    }
+  }
+}
