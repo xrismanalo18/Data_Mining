@@ -193,11 +193,6 @@ function ExecutiveDashboard({ analysis }: { analysis: ProcessAnalysis }) {
         </div>
       </section>
 
-      <section className="card">
-        <DeepHeader kicker="Priority claims" title="Highest Savings Opportunities" detail="Claims are ranked by estimated savings, process delay, manual intervention, reassignment, and rework." />
-        <CaseTable cases={claims.caseInsights.slice(0, 12)} />
-      </section>
-      <Methodology items={claims.methodology} />
     </div>
   );
 }
@@ -327,10 +322,6 @@ function CaseTable({ cases }: { cases: ClaimsAnalysis["caseInsights"] }) {
       </tbody></table>
     </div>
   );
-}
-
-function Methodology({ items }: { items: string[] }) {
-  return <section className="card methodology"><DeepHeader kicker="Explainability" title="Calculation Rules" detail="The dashboard uses deterministic rules so each metric can be traced to the uploaded event log." /><ol>{items.map(item => <li key={item}>{item}</li>)}</ol></section>;
 }
 
 function DeepKpi({ label, value, detail, tone }: { label: string; value: string; detail: string; tone: string }) {
