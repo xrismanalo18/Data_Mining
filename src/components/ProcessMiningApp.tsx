@@ -2,7 +2,6 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
-import DealHealthAnalyzer from "@/components/DealHealthAnalyzer";
 import DeepDiveSolution, { type ClaimsAnalysis } from "@/components/DeepDiveSolution";
 
 type Dataset = {
@@ -214,8 +213,6 @@ export default function ProcessMiningApp() {
             </table>
           </div>
         </section>
-
-        <DealHealthAnalyzer />
 
         {preview && (
           <MappingPreview
