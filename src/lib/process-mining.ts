@@ -318,10 +318,16 @@ export function analyze(events: EventRow[]) {
     resources: resources.entries().slice(0, 10).map(([name, count]) => ({ name, count })),
     transitions: transitions.entries().map(([key, count]) => {
       const [from, to] = key.split("|||");
-      return { from, to, count, avgHours: average(transitionDurations.get(key) || []) };
+      return {
+        from,
+        to,
+        count,
+        caseCount: transitionCases.get(key)?.size || 0,
+        avgHours: average(transitionDurations.get(key) || []),
+      };
     }),
     bottlenecks,
-    pathAnalysis: pathAnalysis.slice(0, 30),
+    pathAnalysis: pathAnalysis.slice(0, 100),
     slowestPaths: [...pathAnalysis].sort((a, b) => b.avgHours - a.avgHours).slice(0, 8),
     fastestPaths: [...pathAnalysis].sort((a, b) => a.avgHours - b.avgHours).slice(0, 8),
     reworkPaths: [...pathAnalysis].sort((a, b) => b.repeatedSteps - a.repeatedSteps || b.count - a.count).slice(0, 8),

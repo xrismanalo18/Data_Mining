@@ -22,7 +22,7 @@ type ProcessAnalysis = {
   completionRate?: number;
   reworkRate: number;
   activities: { name: string; count: number }[];
-  transitions: { from: string; to: string; count: number; avgHours: number }[];
+  transitions: { from: string; to: string; count: number; caseCount: number; avgHours: number }[];
   pathAnalysis: PathItem[];
   claims: ClaimsAnalysis;
 };

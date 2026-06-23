@@ -35,7 +35,7 @@ type Analysis = {
   reworkRate: number;
   totalCost: number;
   activities: { name: string; count: number }[];
-  transitions: { from: string; to: string; count: number; avgHours: number }[];
+  transitions: { from: string; to: string; count: number; caseCount: number; avgHours: number }[];
   bottlenecks: {
     from: string;
     to: string;
@@ -358,169 +358,289 @@ function renderTab(tab: string, analysis: Analysis) {
 }
 
 function MapPanel({ analysis }: { analysis: Analysis }) {
+  const segmentOptions = useMemo(() => getSegmentOptions(analysis), [analysis]);
+  const [segment, setSegment] = useState("All claims");
+  const filtered = useMemo(() => filterAnalysisBySegment(analysis, segment), [analysis, segment]);
   const [zoom, setZoom] = useState(0.55);
-  const map = useMemo(() => buildMapSvg(analysis), [analysis]);
-  const busiest = analysis.activities[0];
-  const slowest = [...analysis.transitions].sort((a, b) => b.avgHours - a.avgHours)[0];
+  const map = useMemo(() => buildMapSvg(filtered), [filtered]);
+  const selfLoops = filtered.transitions.filter(item => item.from === item.to).sort((a, b) => b.caseCount - a.caseCount);
+  const start = filtered.starts[0];
+  const end = filtered.ends[0];
   const zoomPercent = Math.round(zoom * 100);
   const changeZoom = (amount: number) => {
     setZoom(current => Math.min(1.8, Math.max(0.3, Number((current + amount).toFixed(2)))));
   };
   return (
-    <section className="card">
-      <PanelHeader
-        kicker="Flow analysis"
-        title="Process Movement Map"
-        detail="Movement, queue volume, and wait-time severity are shown together so the highest-impact flow stands out first."
-      />
-      <div className="highlight-grid">
-        <Highlight label="Highest volume queue" value={busiest?.name || "No activity"} detail={busiest ? `${busiest.count.toLocaleString()} events` : "Upload data to analyze"} tone="blue" />
-        <Highlight label="Slowest handoff" value={slowest ? `${slowest.from} to ${slowest.to}` : "No transition"} detail={slowest ? formatHours(slowest.avgHours) : "No timing signal"} tone="amber" />
-        <Highlight label="Process complexity" value={`${analysis.variantCount.toLocaleString()} variants`} detail={`${analysis.activityCount.toLocaleString()} unique activities`} tone="purple" />
+    <section className="card process-map-card">
+      <div className="analysis-controlbar">
+        <div><span className="control-label">Process view</span><strong>{segment}</strong></div>
+        <label className="inline-select">
+          <span>Claim segment</span>
+          <select value={segment} onChange={event => setSegment(event.target.value)}>
+            {segmentOptions.map(option => <option key={option} value={option}>{option}</option>)}
+          </select>
+        </label>
+        <div className="control-stat"><span>Claims</span><strong>{filtered.caseCount.toLocaleString()}</strong></div>
+        <div className="control-stat"><span>Self-loop claims</span><strong>{selfLoops.reduce((sum, item) => sum + item.caseCount, 0).toLocaleString()}</strong></div>
+        <div className="control-stat"><span>Queues</span><strong>{filtered.activities.length}</strong></div>
+        <div className="map-zoom-controls" aria-label="Map zoom controls">
+          <button type="button" onClick={() => changeZoom(-0.15)} disabled={zoom <= 0.3} aria-label="Zoom out">-</button>
+          <span>{zoomPercent}%</span>
+          <button type="button" onClick={() => changeZoom(0.15)} disabled={zoom >= 1.8} aria-label="Zoom in">+</button>
+          <button type="button" onClick={() => setZoom(0.55)}>Reset</button>
+        </div>
+      </div>
+      <div className="map-signal-strip">
+        <span className="start-signal"><i /> Start: <strong>{start?.name || "No start detected"}</strong> {start ? `(${start.count.toLocaleString()})` : ""}</span>
+        <span className="loop-signal"><i /> Loops: <strong>{selfLoops[0]?.from || "None"}</strong> {selfLoops[0] ? `(${selfLoops[0].caseCount.toLocaleString()} claims)` : ""}</span>
+        <span className="end-signal"><i /> End: <strong>{end?.name || "No end detected"}</strong> {end ? `(${end.count.toLocaleString()})` : ""}</span>
       </div>
       <div className="map-wrap">
-        <div className="map-toolbar">
-          <strong>Flow view</strong>
-          <span>Queue movement</span>
-          <span>{analysis.activityCount} queues</span>
-          <span>{analysis.caseCount.toLocaleString()} cases</span>
-          <div className="map-zoom-controls" aria-label="Map zoom controls">
-            <button type="button" onClick={() => changeZoom(-0.15)} disabled={zoom <= 0.3} aria-label="Zoom out">-</button>
-            <span>{zoomPercent}%</span>
-            <button type="button" onClick={() => changeZoom(0.15)} disabled={zoom >= 1.8} aria-label="Zoom in">+</button>
-            <button type="button" onClick={() => setZoom(0.55)}>Reset</button>
-          </div>
-        </div>
         <div className="map-canvas">
           <div className="map-scaler" style={{ width: map.width * zoom, height: map.height * zoom }}>
-            <div
-              className="map-content"
-              dangerouslySetInnerHTML={{ __html: map.svg }}
-            />
+            <div className="map-content" dangerouslySetInnerHTML={{ __html: map.svg }} />
           </div>
         </div>
       </div>
+      {selfLoops.length > 0 && (
+        <div className="loop-ledger" aria-label="Actual self-looping claims">
+          {selfLoops.slice(0, 8).map(loop => (
+            <div key={loop.from}>
+              <span className="loop-glyph">↻</span>
+              <strong>{loop.from}</strong>
+              <b>{loop.caseCount.toLocaleString()} claims</b>
+              <small>{loop.count.toLocaleString()} repeats</small>
+            </div>
+          ))}
+        </div>
+      )}
     </section>
   );
 }
 
-function buildMapSvg(analysis: Analysis): { svg: string; width: number; height: number } {
-  const transitions = analysis.transitions.slice(0, 80);
+type MapAnalysis = {
+  caseCount: number;
+  activities: { name: string; count: number }[];
+  transitions: Analysis["transitions"];
+  starts: { name: string; count: number }[];
+  ends: { name: string; count: number }[];
+};
+
+function buildMapSvg(analysis: MapAnalysis): { svg: string; width: number; height: number } {
+  const transitions = analysis.transitions.slice(0, 90);
   const activities = [...new Set(transitions.flatMap(item => [item.from, item.to]))];
   const volume = new Map(analysis.activities.map(item => [item.name, item.count]));
   const positions = new Map<string, [number, number]>();
-  const width = Math.max(1900, activities.length * 95);
-  const height = 900;
+  const width = Math.max(1850, activities.length * 92);
+  const height = 760;
   activities.forEach((activity, index) => {
-    const x = 120 + (index % 9) * 200 + Math.floor(index / 9) * 70;
-    const y = 110 + Math.floor(index / 9) * 170 + (index % 2) * 60;
-    positions.set(activity, [x, Math.min(height - 100, y)]);
+    const x = 250 + (index % 9) * 175 + Math.floor(index / 9) * 45;
+    const y = 125 + Math.floor(index / 9) * 185 + (index % 2) * 70;
+    positions.set(activity, [x, Math.min(height - 110, y)]);
   });
   const maxCount = Math.max(...transitions.map(item => item.count), 1);
   const maxWait = Math.max(...transitions.map(item => item.avgHours), 1);
-  const minWait = Math.min(...transitions.map(item => item.avgHours), maxWait);
-  const waitRange = Math.max(maxWait - minWait, 1);
-  const labels = new Set(analysis.activities.slice(0, 16).map(item => item.name));
   const edgeSvg = transitions.map((transition, index) => {
     const [x1, y1] = positions.get(transition.from) || [0, 0];
     const [x2, y2] = positions.get(transition.to) || [0, 0];
+    const isLoop = transition.from === transition.to;
     const cx = (x1 + x2) / 2;
     const cy = (y1 + y2) / 2 - 110 + (index % 3) * 70;
     const color = transition.avgHours < 24 ? "#2563EB" : transition.avgHours < 72 ? "#0F766E" : transition.avgHours < 168 ? "#D97706" : "#B42318";
     const pathId = `edge-${index}`;
-    const duration = 1.8 + ((transition.avgHours - minWait) / waitRange) * 14;
-    const strokeWidth = 1 + transition.count / maxCount * 5;
-    const hitWidth = Math.max(14, strokeWidth + 10);
-    const tooltipX = Math.min(width - 282, Math.max(12, cx - 136));
-    const tooltipY = Math.min(height - 88, Math.max(12, cy - 78));
-    const transitionLabel = `${transition.from} to ${transition.to}`;
-    const countLabel = `${transition.count.toLocaleString()} transitions`;
-    const daysLabel = `Avg completion: ${formatMapDays(transition.avgHours)}`;
-    const title = `${transitionLabel} | ${countLabel} | ${daysLabel}`;
+    const duration = 2.4 + (transition.avgHours / maxWait) * 13;
+    const path = isLoop
+      ? `M ${x1 + 16} ${y1} C ${x1 + 88} ${y1 - 80}, ${x1 - 88} ${y1 - 80}, ${x1 - 16} ${y1}`
+      : `M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}`;
     return `
-      <g class="map-edge">
-        <title>${escapeHtml(title)}</title>
-        <path class="map-edge-hit" d="M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}" fill="none" stroke="transparent" stroke-width="${hitWidth}" pointer-events="stroke" />
-        <path id="${pathId}" class="map-edge-line" d="M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}" fill="none" stroke="${color}" stroke-width="${strokeWidth}" opacity=".52" />
-        <circle r="${3 + transition.count / maxCount * 3}" fill="${color}" opacity=".92">
-          <animateMotion dur="${duration.toFixed(2)}s" repeatCount="indefinite"><mpath href="#${pathId}" /></animateMotion>
-        </circle>
-        <g class="edge-tooltip" transform="translate(${tooltipX} ${tooltipY})">
-          <rect width="270" height="70" rx="8" fill="#111827" opacity=".94" />
-          <text x="12" y="20" font-size="11" font-weight="900" fill="#FFFFFF">${escapeHtml(transitionLabel.length > 42 ? `${transitionLabel.slice(0, 39)}...` : transitionLabel)}</text>
-          <text x="12" y="41" font-size="10" font-weight="800" fill="#DBEAFE">${escapeHtml(countLabel)}</text>
-          <text x="12" y="58" font-size="10" font-weight="800" fill="#CBD5E1">${escapeHtml(daysLabel)}</text>
-        </g>
-      </g>`;
+      <path id="${pathId}" d="${path}" fill="none" stroke="${isLoop ? "#16A34A" : color}" stroke-width="${1.2 + transition.count / maxCount * 5}" opacity="${isLoop ? ".9" : ".48"}" marker-end="url(#arrow)" />
+      <circle r="${3 + transition.count / maxCount * 3}" fill="${color}" opacity=".92">
+        <animateMotion dur="${duration.toFixed(2)}s" repeatCount="indefinite"><mpath href="#${pathId}" /></animateMotion>
+      </circle>
+      ${isLoop ? `<text x="${x1}" y="${y1 - 67}" text-anchor="middle" font-size="10" font-weight="900" fill="#15803D">${transition.caseCount.toLocaleString()} looping claims</text>` : ""}`;
   }).join("");
   const nodeSvg = activities.map(activity => {
     const [x, y] = positions.get(activity) || [0, 0];
     const count = volume.get(activity) || 0;
     const label = activity.length > 22 ? `${activity.slice(0, 19)}...` : activity;
     return `
-      <circle cx="${x}" cy="${y}" r="${5 + Math.min(16, count / Math.max(1, analysis.eventCount) * 80)}" fill="#FFFFFF" stroke="#2563EB" stroke-width="1.4"><title>${escapeHtml(activity)} | ${count} events</title></circle>
-      <text x="${x}" y="${y - 14}" text-anchor="middle" font-size="10" font-weight="900" fill="#182230">${count}</text>
-      ${labels.has(activity) ? `<rect x="${x - 92}" y="${y + 15}" width="184" height="28" rx="7" fill="#FFFFFF" stroke="#BFDBFE" /><text x="${x}" y="${y + 34}" text-anchor="middle" font-size="8.5" font-weight="800" fill="#182230">${escapeHtml(label)}</text>` : ""}`;
+      <rect x="${x - 70}" y="${y - 17}" width="140" height="34" rx="17" fill="#FFFFFF" stroke="#72C7CC" stroke-width="1.4"><title>${escapeHtml(activity)} | ${count} events</title></rect>
+      <circle cx="${x - 55}" cy="${y}" r="10" fill="#E6F7F8" stroke="#72C7CC" />
+      <text x="${x - 55}" y="${y + 3.5}" text-anchor="middle" font-size="8" font-weight="900" fill="#0F766E">${count}</text>
+      <text x="${x - 39}" y="${y + 3.5}" font-size="8.5" font-weight="800" fill="#182230">${escapeHtml(label)}</text>`;
+  }).join("");
+  const startSvg = analysis.starts.slice(0, 6).map((item, index) => {
+    const target = positions.get(item.name);
+    if (!target) return "";
+    const y = 105 + index * 92;
+    return `<path d="M 78 ${y} Q 150 ${y} ${target[0] - 72} ${target[1]}" fill="none" stroke="#14B8A6" stroke-width="1.5" marker-end="url(#arrow)" opacity=".72"/>
+      <circle cx="58" cy="${y}" r="16" fill="#ECFDF5" stroke="#14B8A6" stroke-width="2"/>
+      <path d="M 52 ${y} L 65 ${y}" stroke="#0F766E" stroke-width="2"/><path d="M 61 ${y - 4} L 65 ${y} L 61 ${y + 4}" fill="none" stroke="#0F766E" stroke-width="2"/>
+      <text x="58" y="${y + 29}" text-anchor="middle" font-size="9" font-weight="900" fill="#0F766E">START ${item.count}</text>`;
+  }).join("");
+  const endSvg = analysis.ends.slice(0, 6).map((item, index) => {
+    const source = positions.get(item.name);
+    if (!source) return "";
+    const y = 105 + index * 92;
+    return `<path d="M ${source[0] + 72} ${source[1]} Q ${width - 150} ${y} ${width - 78} ${y}" fill="none" stroke="#64748B" stroke-width="1.5" marker-end="url(#arrow)" opacity=".72"/>
+      <circle cx="${width - 58}" cy="${y}" r="16" fill="#FFFFFF" stroke="#64748B" stroke-width="2"/>
+      <path d="M ${width - 64} ${y - 6} L ${width - 52} ${y + 6} M ${width - 52} ${y - 6} L ${width - 64} ${y + 6}" stroke="#475569" stroke-width="2"/>
+      <text x="${width - 58}" y="${y + 29}" text-anchor="middle" font-size="9" font-weight="900" fill="#475569">END ${item.count}</text>`;
   }).join("");
   return {
-    svg: `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg" style="display:block;background:#F8FAFC"><style>.map-edge .edge-tooltip{opacity:0;pointer-events:none;transition:opacity .12s ease}.map-edge:hover .edge-tooltip{opacity:1}.map-edge:hover .map-edge-line{opacity:.88}</style>${edgeSvg}${nodeSvg}</svg>`,
+    svg: `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg" style="display:block;background:#FBFDFE"><defs><marker id="arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#5ABFC5"/></marker></defs>${startSvg}${endSvg}${edgeSvg}${nodeSvg}</svg>`,
     width,
     height,
   };
 }
 
 function Bottlenecks({ analysis }: { analysis: Analysis }) {
-  const top = analysis.bottlenecks[0];
+  const [metric, setMetric] = useState<"impact" | "average" | "count">("impact");
+  const rows = useMemo(() => [...analysis.bottlenecks].sort((a, b) => {
+    if (metric === "average") return b.avgHours - a.avgHours;
+    if (metric === "count") return b.caseCount - a.caseCount;
+    return b.impactHours - a.impactHours;
+  }), [analysis.bottlenecks, metric]);
+  const totalImpact = rows.reduce((sum, item) => sum + item.impactHours, 0);
+  const maxValue = Math.max(...rows.map(item => metric === "average" ? item.avgHours : metric === "count" ? item.caseCount : item.impactHours), 1);
   return (
-    <section className="grid cols">
-      <div className="card">
-        <PanelHeader
-          kicker="Time impact"
-          title="Bottleneck Analysis"
-          detail={top ? `Primary delay: ${top.from} to ${top.to}, averaging ${formatHours(top.avgHours)} per handoff.` : "No bottleneck signal was detected."}
-        />
-        {analysis.bottlenecks.slice(0, 5).map(item => (
-          <div key={`${item.from}-${item.to}`} className="finding">
-            <div className="finding-head">
-              <span className={`badge ${item.severity}`}>{item.severity}</span>
-              <strong>{formatHours(item.impactHours)} impact</strong>
-            </div>
-            <h3>{item.from} to {item.to}</h3>
-            <p>Average {formatHours(item.avgHours)}. P90 {formatHours(item.p90Hours)}. Max observed {formatHours(item.maxHours)}.</p>
-          </div>
-        ))}
+    <section className="card compact-analysis">
+      <div className="analysis-controlbar">
+        <div><span className="control-label">Bottleneck analysis</span><strong>Time from event to next</strong></div>
+        <div className="segmented-control">
+          <button className={metric === "impact" ? "active" : ""} onClick={() => setMetric("impact")}>Total time</button>
+          <button className={metric === "average" ? "active" : ""} onClick={() => setMetric("average")}>Average</button>
+          <button className={metric === "count" ? "active" : ""} onClick={() => setMetric("count")}>Claims</button>
+        </div>
+        <div className="control-stat"><span>Total impact</span><strong>{formatHours(totalImpact)}</strong></div>
       </div>
-      <div className="card">
-        <PanelHeader kicker="Evidence table" title="Transition Detail" detail="Sorted by total time impact across all handoffs." />
-        <table><thead><tr><th>Transition</th><th>Count</th><th>Risk</th><th>Avg</th><th>P90</th></tr></thead><tbody>{analysis.bottlenecks.map(item => <tr key={`${item.from}-${item.to}`}><td>{item.from} &rarr; {item.to}</td><td>{item.count}</td><td><span className={`badge ${item.severity}`}>{item.severity}</span></td><td>{formatHours(item.avgHours)}</td><td>{formatHours(item.p90Hours)}</td></tr>)}</tbody></table>
+      <div className="table-scroll">
+        <table className="bottleneck-table">
+          <thead><tr><th>Event → next event</th><th>Claims</th><th>Per claim</th><th>Average time</th><th>Total time</th><th>Total time %</th></tr></thead>
+          <tbody>{rows.map(item => {
+            const value = metric === "average" ? item.avgHours : metric === "count" ? item.caseCount : item.impactHours;
+            return <tr key={`${item.from}-${item.to}`}>
+              <td><strong>{item.from}</strong><span className="route-next">→ {item.to}</span></td>
+              <td>{item.caseCount.toLocaleString()}</td>
+              <td>{(item.count / Math.max(item.caseCount, 1)).toFixed(2)}</td>
+              <td>{formatHours(item.avgHours)}</td>
+              <td><div className="metric-bar-cell"><span style={{ width: `${Math.max(3, value / maxValue * 100)}%` }} /><b>{formatHours(item.impactHours)}</b></div></td>
+              <td>{(item.impactHours / Math.max(totalImpact, 1) * 100).toFixed(2)}%</td>
+            </tr>;
+          })}</tbody>
+        </table>
       </div>
     </section>
   );
 }
 
 function Paths({ analysis }: { analysis: Analysis }) {
-  const dominant = analysis.pathAnalysis[0];
+  const [view, setView] = useState<"path" | "schema">("path");
+  const [segment, setSegment] = useState("All claims");
+  const [sort, setSort] = useState<"volume" | "duration" | "loops">("duration");
+  const options = useMemo(() => getSegmentOptions(analysis), [analysis]);
+  const paths = useMemo(() => {
+    const filtered = segment === "All claims" ? analysis.pathAnalysis : analysis.pathAnalysis.filter(item => item.path.includes(segment));
+    return [...filtered].sort((a, b) => sort === "duration" ? b.avgHours - a.avgHours : sort === "loops" ? b.repeatedSteps - a.repeatedSteps : b.count - a.count).slice(0, 12);
+  }, [analysis.pathAnalysis, segment, sort]);
   return (
-    <section className="grid">
-      <div className="card">
-        <PanelHeader
-          kicker="Variant analysis"
-          title="Path Analysis"
-          detail={dominant ? `Most common path represents ${dominant.share.toFixed(1)}% of cases and averages ${formatHours(dominant.avgHours)}.` : "No path variants were found."}
-        />
-        <PathTable paths={analysis.pathAnalysis} />
+    <section className="card compact-analysis path-analysis">
+      <div className="analysis-controlbar">
+        <div><span className="control-label">Path analysis</span><strong>{paths.length} paths</strong></div>
+        <div className="segmented-control">
+          <button className={view === "path" ? "active" : ""} onClick={() => setView("path")}>Path</button>
+          <button className={view === "schema" ? "active" : ""} onClick={() => setView("schema")}>Schema</button>
+        </div>
+        <label className="inline-select"><span>Segment</span><select value={segment} onChange={event => setSegment(event.target.value)}>{options.map(option => <option key={option}>{option}</option>)}</select></label>
+        <label className="inline-select"><span>Sort</span><select value={sort} onChange={event => setSort(event.target.value as typeof sort)}><option value="duration">Average duration</option><option value="volume">Claim volume</option><option value="loops">Self loops</option></select></label>
       </div>
-      <div className="grid cols">
-        <div className="card"><PanelHeader kicker="Cycle time risk" title="Slowest Paths" detail="Paths with the longest average duration." /><PathTable paths={analysis.slowestPaths} compact /></div>
-        <div className="card"><PanelHeader kicker="Reference pattern" title="Fastest Paths" detail="Paths that can be used as a baseline for better flow." /><PathTable paths={analysis.fastestPaths} compact /></div>
-      </div>
-      <div className="card"><PanelHeader kicker="Rework signal" title="Rework and Looping Paths" detail="Repeated activities indicate avoidable handoffs or correction loops." /><PathTable paths={analysis.reworkPaths} /></div>
+      {view === "path" ? <PathCanvas paths={paths} /> : <SchemaCanvas paths={paths} />}
     </section>
   );
 }
 
-function PathTable({ paths, compact }: { paths: PathItem[]; compact?: boolean }) {
-  return <table><thead><tr><th>Path</th><th>Cases</th><th>Share</th><th>Avg</th><th>P90</th><th>Loops</th><th>Status</th></tr></thead><tbody>{paths.map((path, index) => <tr key={index}><td><div className="path">{path.path.slice(0, compact ? 5 : 8).map((step, stepIndex) => <span className="step" key={`${step}-${stepIndex}`}>{step}</span>)}</div></td><td>{path.count}</td><td>{path.share.toFixed(1)}%</td><td>{formatHours(path.avgHours)}</td><td>{formatHours(path.p90Hours)}</td><td>{path.repeatedSteps}</td><td><span className={`badge ${path.status === "Needs attention" ? "Needs" : path.status}`}>{path.status}</span></td></tr>)}</tbody></table>;
+function PathCanvas({ paths }: { paths: PathItem[] }) {
+  return <div className="path-canvas">
+    {paths.map((item, index) => <article className="path-column" key={`${item.path.join("-")}-${index}`}>
+      <header><span>#{index + 1}</span><strong>{formatHours(item.avgHours)}</strong><small>{item.count.toLocaleString()} claims</small></header>
+      <div className="path-track">
+        <span className="journey-terminal start">▶</span>
+        {item.path.map((step, stepIndex) => {
+          const repeated = item.path.indexOf(step) < stepIndex;
+          return <div className={`path-node ${repeated ? "repeated" : ""}`} key={`${step}-${stepIndex}`}>
+            {repeated && <i className="path-loop">↻</i>}
+            <span>{step}</span>
+          </div>;
+        })}
+        <span className="journey-terminal end">×</span>
+      </div>
+      <footer><b>{item.share.toFixed(1)}%</b><span>{item.repeatedSteps ? `${item.repeatedSteps} loops` : "Direct"}</span></footer>
+    </article>)}
+  </div>;
+}
+
+function SchemaCanvas({ paths }: { paths: PathItem[] }) {
+  const nodes = new Map<string, { incoming: number; outgoing: number; paths: number }>();
+  paths.forEach(path => path.path.forEach((step, index) => {
+    const value = nodes.get(step) || { incoming: 0, outgoing: 0, paths: 0 };
+    value.paths += path.count;
+    if (index > 0) value.incoming += path.count;
+    if (index < path.path.length - 1) value.outgoing += path.count;
+    nodes.set(step, value);
+  }));
+  const rows = [...nodes.entries()].sort((a, b) => b[1].paths - a[1].paths);
+  const max = Math.max(...rows.map(([, value]) => value.paths), 1);
+  return <div className="schema-canvas">
+    {rows.map(([name, value]) => <div className="schema-row" key={name}>
+      <span className="schema-in">{value.incoming.toLocaleString()} →</span>
+      <strong>{name}</strong>
+      <div className="schema-volume"><i style={{ width: `${value.paths / max * 100}%` }} /></div>
+      <span className="schema-out">→ {value.outgoing.toLocaleString()}</span>
+    </div>)}
+  </div>;
+}
+
+function getSegmentOptions(analysis: Analysis) {
+  const claimNames = analysis.activities
+    .filter(item => /claim|saving|queue/i.test(item.name))
+    .sort((a, b) => b.count - a.count)
+    .map(item => item.name);
+  return ["All claims", ...claimNames.slice(0, 30)];
+}
+
+function filterAnalysisBySegment(analysis: Analysis, segment: string): MapAnalysis {
+  const paths = segment === "All claims" ? analysis.pathAnalysis : analysis.pathAnalysis.filter(item => item.path.includes(segment));
+  if (!paths.length) {
+    return { caseCount: analysis.caseCount, activities: analysis.activities, transitions: analysis.transitions, starts: [], ends: [] };
+  }
+  const starts = new Map<string, number>();
+  const ends = new Map<string, number>();
+  const edgeCounts = new Map<string, number>();
+  const nodeCounts = new Map<string, number>();
+  paths.forEach(item => {
+    const first = item.path[0];
+    const last = item.path[item.path.length - 1];
+    if (first) starts.set(first, (starts.get(first) || 0) + item.count);
+    if (last) ends.set(last, (ends.get(last) || 0) + item.count);
+    item.path.forEach(step => nodeCounts.set(step, (nodeCounts.get(step) || 0) + item.count));
+    for (let index = 0; index < item.path.length - 1; index += 1) {
+      const key = `${item.path[index]}|||${item.path[index + 1]}`;
+      edgeCounts.set(key, (edgeCounts.get(key) || 0) + item.count);
+    }
+  });
+  const globalEdges = new Map(analysis.transitions.map(item => [`${item.from}|||${item.to}`, item]));
+  const transitions = [...edgeCounts.entries()].map(([key, count]) => {
+    const [from, to] = key.split("|||");
+    const global = globalEdges.get(key);
+    return { from, to, count, caseCount: Math.min(count, global?.caseCount || count), avgHours: global?.avgHours || 0 };
+  }).sort((a, b) => b.count - a.count);
+  return {
+    caseCount: paths.reduce((sum, item) => sum + item.count, 0),
+    activities: [...nodeCounts.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count),
+    transitions,
+    starts: [...starts.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count),
+    ends: [...ends.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count),
+  };
 }
 
 function Queues({ analysis }: { analysis: Analysis }) {
