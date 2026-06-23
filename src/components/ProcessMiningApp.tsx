@@ -535,25 +535,65 @@ function Bottlenecks({ analysis }: { analysis: Analysis }) {
 }
 
 function Paths({ analysis }: { analysis: Analysis }) {
+  const [view, setView] = useState<"path" | "schema">("path");
   const [sort, setSort] = useState<"volume" | "duration" | "loops">("duration");
+  const [direction, setDirection] = useState<"ascending" | "descending">("descending");
+  const [pathLimit, setPathLimit] = useState(50);
+  const [configurationOpen, setConfigurationOpen] = useState(false);
+  const [activityFilter, setActivityFilter] = useState<string | null>(null);
+  const [selectedPathKey, setSelectedPathKey] = useState<string | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const paths = useMemo(() => {
-    return [...analysis.pathAnalysis]
-      .sort((a, b) => sort === "duration" ? b.avgHours - a.avgHours : sort === "loops" ? b.repeatedSteps - a.repeatedSteps : b.count - a.count)
-      .slice(0, 12);
-  }, [analysis.pathAnalysis, sort]);
+    const source = activityFilter ? analysis.pathAnalysis.filter(path => path.path.includes(activityFilter)) : analysis.pathAnalysis;
+    const multiplier = direction === "ascending" ? 1 : -1;
+    return [...source]
+      .sort((a, b) => multiplier * (sort === "duration" ? a.avgHours - b.avgHours : sort === "loops" ? a.repeatedSteps - b.repeatedSteps : a.count - b.count))
+      .slice(0, pathLimit);
+  }, [analysis.pathAnalysis, activityFilter, direction, pathLimit, sort]);
+  const availablePathCount = activityFilter ? analysis.pathAnalysis.filter(path => path.path.includes(activityFilter)).length : analysis.pathAnalysis.length;
+  const selectedPath = selectedPathKey ? paths.find(path => path.path.join("::") === selectedPathKey) || null : null;
   const totalVisibleClaims = paths.reduce((sum, item) => sum + item.count, 0);
-  const visibleLoops = paths.reduce((sum, item) => sum + item.repeatedSteps, 0);
-  const weightedDuration = paths.reduce((sum, item) => sum + item.avgHours * item.count, 0) / Math.max(totalVisibleClaims, 1);
   return (
     <section className="card compact-analysis path-analysis">
-      <div className="analysis-controlbar">
-        <div><span className="control-label">Path analysis</span><strong>{paths.length} claim journeys</strong></div>
-        <label className="inline-select"><span>Sort</span><select value={sort} onChange={event => setSort(event.target.value as typeof sort)}><option value="duration">Average duration</option><option value="volume">Claim volume</option><option value="loops">Self loops</option></select></label>
-        <div className="control-stat"><span>Visible claims</span><strong>{totalVisibleClaims.toLocaleString()}</strong></div>
-        <div className="control-stat"><span>Avg duration</span><strong>{formatHours(weightedDuration)}</strong></div>
-        <div className="control-stat"><span>Loop signals</span><strong>{visibleLoops.toLocaleString()}</strong></div>
+      <div className="path-commandbar">
+        <button className={configurationOpen ? "active" : ""} onClick={() => setConfigurationOpen(current => !current)}>Set configuration</button>
+        <div className="segmented-control path-view-switch">
+          <button className={view === "path" ? "active" : ""} onClick={() => setView("path")}>Path</button>
+          <button className={view === "schema" ? "active" : ""} onClick={() => setView("schema")}>Schema</button>
+        </div>
+        <span className="path-disclosure">Displaying top <strong>{paths.length}</strong> paths out of <strong>{availablePathCount.toLocaleString()}</strong></span>
+        {activityFilter && <button className="path-filter-chip" onClick={() => setActivityFilter(null)} title="Clear queue filter">{activityFilter}<b>×</b></button>}
+        <button className="path-details-command" disabled={!selectedPath} onClick={() => setDetailsOpen(current => !current)}>Path details</button>
       </div>
-      <PathTimeline paths={paths} activities={analysis.activities} />
+      {configurationOpen && (
+        <div className="path-configuration">
+          <label><span>Measure</span><select value={sort} onChange={event => setSort(event.target.value as typeof sort)}><option value="duration">Average business duration</option><option value="volume">Claim volume</option><option value="loops">Loop count</option></select></label>
+          <label><span>Direction</span><select value={direction} onChange={event => setDirection(event.target.value as typeof direction)}><option value="descending">Descending</option><option value="ascending">Ascending</option></select></label>
+          <label><span>Paths shown</span><select value={pathLimit} onChange={event => setPathLimit(Number(event.target.value))}><option value={25}>Top 25</option><option value={50}>Top 50</option><option value={100}>Top 100</option></select></label>
+          <div><span>Visible claims</span><strong>{totalVisibleClaims.toLocaleString()}</strong></div>
+        </div>
+      )}
+      {view === "path" ? (
+        <PathTimeline
+          paths={paths}
+          activities={analysis.activities}
+          metric={sort}
+          activityFilter={activityFilter}
+          onActivityFilter={setActivityFilter}
+          selectedPathKey={selectedPathKey}
+          onSelectPath={key => { setSelectedPathKey(key); setDetailsOpen(true); }}
+        />
+      ) : <SchemaCanvas paths={paths} />}
+      {selectedPath && detailsOpen && (
+        <div className="path-detail-panel">
+          <div><span>Selected path</span><strong>{selectedPath.count.toLocaleString()} claims</strong></div>
+          <div><span>Share</span><strong>{selectedPath.share.toFixed(2)}%</strong></div>
+          <div><span>Average duration</span><strong>{formatHours(selectedPath.avgHours)}</strong></div>
+          <div><span>Loops</span><strong>{selectedPath.repeatedSteps}</strong></div>
+          <p>{selectedPath.path.map((step, index) => <span key={`${step}-${index}`}>{step}</span>)}</p>
+          <button onClick={() => setDetailsOpen(false)} aria-label="Close path details" title="Close path details">×</button>
+        </div>
+      )}
     </section>
   );
 }
@@ -578,7 +618,23 @@ function PathCanvas({ paths }: { paths: PathItem[] }) {
   </div>;
 }
 
-function PathTimeline({ paths, activities }: { paths: PathItem[]; activities: Analysis["activities"] }) {
+function PathTimeline({
+  paths,
+  activities,
+  metric,
+  activityFilter,
+  onActivityFilter,
+  selectedPathKey,
+  onSelectPath,
+}: {
+  paths: PathItem[];
+  activities: Analysis["activities"];
+  metric: "volume" | "duration" | "loops";
+  activityFilter: string | null;
+  onActivityFilter: (activity: string | null) => void;
+  selectedPathKey: string | null;
+  onSelectPath: (pathKey: string) => void;
+}) {
   const rows = useMemo(() => buildTimelineRows(paths, activities), [paths, activities]);
   const [hiddenRows, setHiddenRows] = useState<Set<string>>(() => new Set());
   const [hovered, setHovered] = useState<{
@@ -589,8 +645,8 @@ function PathTimeline({ paths, activities }: { paths: PathItem[]; activities: An
     left: number;
     top: number;
   } | null>(null);
-  const rowHeight = 38;
-  const topPad = 12;
+  const rowHeight = 34;
+  const topPad = 8;
   const height = Math.max(220, rows.length * rowHeight + topPad * 2);
   const laneMap = useMemo(() => new Map(rows.map((row, index) => [row.name, index])), [rows]);
   const allRowsVisible = rows.every(row => !hiddenRows.has(row.name));
@@ -619,15 +675,16 @@ function PathTimeline({ paths, activities }: { paths: PathItem[]; activities: An
             <input type="checkbox" checked={allRowsVisible} onChange={toggleAllRows} aria-label="Show all events and queues" />
             <strong>Events / Queues</strong>
           </label>
-          <span>{rows.length.toLocaleString()} lanes · all selected by default</span>
+          <span>{rows.length.toLocaleString()} lanes</span>
         </div>
         <div className="timeline-lane-spacer" style={{ height: topPad }} />
         {rows.map(row => (
-          <label className={`timeline-lane-label ${row.active ? "active" : ""} ${hiddenRows.has(row.name) ? "disabled" : ""} ${hovered && (hovered.from === row.name || hovered.to === row.name) ? "hovered" : ""}`} key={row.name}>
+          <div className={`timeline-lane-label ${row.active ? "active" : ""} ${hiddenRows.has(row.name) ? "disabled" : ""} ${hovered && (hovered.from === row.name || hovered.to === row.name) ? "hovered" : ""}`} key={row.name}>
             <input type="checkbox" checked={!hiddenRows.has(row.name)} onChange={() => toggleRow(row.name)} aria-label={`Show ${row.name}`} />
             <b>{row.count.toLocaleString()}</b>
             <span>{row.name}</span>
-          </label>
+            <button className={activityFilter === row.name ? "active" : ""} onClick={() => onActivityFilter(activityFilter === row.name ? null : row.name)} aria-label={`Filter paths by ${row.name}`} title={`Filter paths by ${row.name}`}><i /></button>
+          </div>
         ))}
         <div className="timeline-lane-spacer" style={{ height: topPad + 34 }} />
       </div>
@@ -642,9 +699,13 @@ function PathTimeline({ paths, activities }: { paths: PathItem[]; activities: An
               rowHeight={rowHeight}
               topPad={topPad}
               height={height}
+              metric={metric}
               hiddenRows={hiddenRows}
               hoveredTransfer={hovered?.pathIndex === index ? hovered.transferIndex : null}
+              focused={hovered?.pathIndex === index}
               dimmed={hovered !== null && hovered.pathIndex !== index}
+              selected={selectedPathKey === path.path.join("::")}
+              onSelect={() => onSelectPath(path.path.join("::"))}
               onTransferHover={(transferIndex, from, to, clientX, clientY) => showTransfer(index, transferIndex, from, to, clientX, clientY)}
               onTransferLeave={() => setHovered(null)}
             />
@@ -670,9 +731,13 @@ function TimelinePathColumn({
   rowHeight,
   topPad,
   height,
+  metric,
   hiddenRows,
   hoveredTransfer,
+  focused,
   dimmed,
+  selected,
+  onSelect,
   onTransferHover,
   onTransferLeave,
 }: {
@@ -682,13 +747,17 @@ function TimelinePathColumn({
   rowHeight: number;
   topPad: number;
   height: number;
+  metric: "volume" | "duration" | "loops";
   hiddenRows: Set<string>;
   hoveredTransfer: number | null;
+  focused: boolean;
   dimmed: boolean;
+  selected: boolean;
+  onSelect: () => void;
   onTransferHover: (transferIndex: number, from: string, to: string, clientX: number, clientY: number) => void;
   onTransferLeave: () => void;
 }) {
-  const width = 118;
+  const width = 108;
   const x = width / 2;
   const occurrences = path.path
     .map((step, stepIndex) => {
@@ -722,10 +791,10 @@ function TimelinePathColumn({
     return { d, from: event.step, to: next.step, visible: !hiddenRows.has(event.step) && !hiddenRows.has(next.step) };
   });
   return (
-    <article className={`timeline-path-column ${dimmed ? "dimmed" : ""}`} onPointerLeave={onTransferLeave}>
+    <article className={`timeline-path-column ${focused ? "focused" : ""} ${selected ? "selected" : ""} ${dimmed ? "dimmed" : ""}`} onPointerLeave={onTransferLeave} onClick={onSelect}>
       <header>
-        <strong>{path.share.toFixed(2)}% | {formatHours(path.avgHours)}</strong>
-        <small>Path #{index + 1} · {path.count.toLocaleString()} claims</small>
+        <strong>{metric === "duration" ? formatHours(path.avgHours) : metric === "loops" ? `${path.repeatedSteps} loops` : `${path.count.toLocaleString()} claims`}</strong>
+        <small>{path.share.toFixed(2)}% · Path #{index + 1}</small>
       </header>
       <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`Claim journey ${index + 1}`}>
         <defs>
