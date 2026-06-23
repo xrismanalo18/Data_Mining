@@ -469,26 +469,26 @@ function buildMapSvg(analysis: MapAnalysis): { svg: string; width: number; heigh
       <text x="${x - 55}" y="${y + 3.5}" text-anchor="middle" font-size="8" font-weight="900" fill="#0F766E">${count}</text>
       <text x="${x - 39}" y="${y + 3.5}" font-size="8.5" font-weight="800" fill="#182230">${escapeHtml(label)}</text>`;
   }).join("");
-  const startSvg = analysis.starts.slice(0, 6).map((item, index) => {
+  const startX = width / 2;
+  const startY = 42;
+  const endX = width / 2;
+  const endY = height - 42;
+  const startSvg = analysis.starts.slice(0, 8).map(item => {
     const target = positions.get(item.name);
     if (!target) return "";
-    const y = 105 + index * 92;
-    return `<path d="M 78 ${y} Q 150 ${y} ${target[0] - 72} ${target[1]}" fill="none" stroke="#14B8A6" stroke-width="1.5" marker-end="url(#arrow)" opacity=".72"/>
-      <circle cx="58" cy="${y}" r="16" fill="#ECFDF5" stroke="#14B8A6" stroke-width="2"/>
-      <path d="M 52 ${y} L 65 ${y}" stroke="#0F766E" stroke-width="2"/><path d="M 61 ${y - 4} L 65 ${y} L 61 ${y + 4}" fill="none" stroke="#0F766E" stroke-width="2"/>
-      <text x="58" y="${y + 29}" text-anchor="middle" font-size="9" font-weight="900" fill="#0F766E">START ${item.count}</text>`;
+    return `<path d="M ${startX} ${startY + 12} Q ${startX} ${Math.max(78, target[1] - 75)} ${target[0]} ${target[1] - 19}" fill="none" stroke="#55C1C7" stroke-width="1.35" marker-end="url(#arrow)" opacity=".72"/>`;
   }).join("");
-  const endSvg = analysis.ends.slice(0, 6).map((item, index) => {
+  const endSvg = analysis.ends.slice(0, 8).map(item => {
     const source = positions.get(item.name);
     if (!source) return "";
-    const y = 105 + index * 92;
-    return `<path d="M ${source[0] + 72} ${source[1]} Q ${width - 150} ${y} ${width - 78} ${y}" fill="none" stroke="#64748B" stroke-width="1.5" marker-end="url(#arrow)" opacity=".72"/>
-      <circle cx="${width - 58}" cy="${y}" r="16" fill="#FFFFFF" stroke="#64748B" stroke-width="2"/>
-      <path d="M ${width - 64} ${y - 6} L ${width - 52} ${y + 6} M ${width - 52} ${y - 6} L ${width - 64} ${y + 6}" stroke="#475569" stroke-width="2"/>
-      <text x="${width - 58}" y="${y + 29}" text-anchor="middle" font-size="9" font-weight="900" fill="#475569">END ${item.count}</text>`;
+    return `<path d="M ${source[0]} ${source[1] + 19} Q ${endX} ${Math.min(endY - 38, source[1] + 100)} ${endX} ${endY - 12}" fill="none" stroke="#55C1C7" stroke-width="1.35" marker-end="url(#arrow)" opacity=".72"/>`;
   }).join("");
+  const terminalSvg = `
+    <circle cx="${startX}" cy="${startY}" r="12" fill="#FFFFFF" stroke="#55C1C7" stroke-width="1.8"><title>Claim start</title></circle>
+    <circle cx="${endX}" cy="${endY}" r="12" fill="#FFFFFF" stroke="#55C1C7" stroke-width="1.8"><title>Claim end</title></circle>
+    <path d="M ${endX - 4} ${endY - 4} L ${endX + 4} ${endY + 4} M ${endX + 4} ${endY - 4} L ${endX - 4} ${endY + 4}" stroke="#0F766E" stroke-width="1.6" stroke-linecap="round"/>`;
   return {
-    svg: `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg" style="display:block;background:#FBFDFE"><defs><marker id="arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#5ABFC5"/></marker></defs>${startSvg}${endSvg}${edgeSvg}${nodeSvg}</svg>`,
+    svg: `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg" style="display:block;background:#FBFDFE"><defs><marker id="arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#5ABFC5"/></marker></defs>${startSvg}${endSvg}${edgeSvg}${nodeSvg}${terminalSvg}</svg>`,
     width,
     height,
   };
