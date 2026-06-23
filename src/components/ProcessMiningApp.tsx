@@ -757,49 +757,53 @@ function TimelinePathColumn({
   onTransferHover: (transferIndex: number, from: string, to: string, clientX: number, clientY: number) => void;
   onTransferLeave: () => void;
 }) {
-  const width = 108;
+  const width = 120;
   const x = width / 2;
   const occurrences = path.path
     .map((step, stepIndex) => {
       const rowIndex = laneMap.get(step);
       if (rowIndex === undefined) return null;
-      const previous = stepIndex > 0 ? path.path[stepIndex - 1] : "";
-      const next = stepIndex < path.path.length - 1 ? path.path[stepIndex + 1] : "";
-      const sameAsPrevious = previous === step;
-      const sameAsNext = next === step;
-      const sequenceOffset = ((stepIndex % 3) - 1) * 4;
-      const loopOffset = sameAsPrevious ? 8 : sameAsNext ? -8 : sequenceOffset;
       return {
         step,
         stepIndex,
-        x: x + loopOffset,
         y: topPad + rowIndex * rowHeight + rowHeight / 2,
-        isLoop: sameAsPrevious || sameAsNext || path.path.indexOf(step) < stepIndex,
       };
     })
     .filter((item): item is NonNullable<typeof item> => Boolean(item));
+  const transitionCount = Math.max(occurrences.length - 1, 1);
+  const trackSpan = Math.min(72, Math.max(0, (transitionCount - 1) * 8));
+  const getTrackX = (transitionIndex: number) => transitionCount === 1
+    ? x
+    : x - trackSpan / 2 + transitionIndex / (transitionCount - 1) * trackSpan;
   const transfers = occurrences.slice(0, -1).map((event, transferIndex) => {
     const next = occurrences[transferIndex + 1];
-    let d: string;
-    if (event.step === next.step) {
-      d = `M ${event.x} ${event.y} C ${event.x + 18} ${event.y - 15}, ${next.x - 18} ${next.y - 15}, ${next.x} ${next.y}`;
-    } else {
-      const direction = next.y >= event.y ? 1 : -1;
-      const bend = Math.min(18, Math.max(7, Math.abs(next.y - event.y) / 4));
-      d = `M ${event.x} ${event.y} C ${event.x} ${event.y + bend * direction}, ${next.x} ${next.y - bend * direction}, ${next.x} ${next.y}`;
-    }
-    return { d, from: event.step, to: next.step, visible: !hiddenRows.has(event.step) && !hiddenRows.has(next.step) };
+    const trackX = getTrackX(transferIndex);
+    const selfLoop = event.step === next.step;
+    return {
+      d: selfLoop ? `M ${trackX - 5} ${event.y} L ${trackX + 5} ${event.y}` : `M ${trackX} ${event.y} L ${trackX} ${next.y}`,
+      from: event.step,
+      to: next.step,
+      fromY: event.y,
+      toY: next.y,
+      trackX,
+      selfLoop,
+      visible: !hiddenRows.has(event.step) && !hiddenRows.has(next.step),
+    };
   });
+  const firstTransfer = transfers[0];
+  const lastTransfer = transfers[transfers.length - 1];
+  const startX = firstTransfer ? firstTransfer.trackX - (firstTransfer.selfLoop ? 5 : 0) : x;
+  const endX = lastTransfer ? lastTransfer.trackX + (lastTransfer.selfLoop ? 5 : 0) : x;
   return (
     <article className={`timeline-path-column ${focused ? "focused" : ""} ${selected ? "selected" : ""} ${dimmed ? "dimmed" : ""}`} onPointerLeave={onTransferLeave} onClick={onSelect}>
       <header>
         <strong>{metric === "duration" ? formatHours(path.avgHours) : metric === "loops" ? `${path.repeatedSteps} loops` : `${path.count.toLocaleString()} claims`}</strong>
-        <small>{path.share.toFixed(2)}% · Path #{index + 1}</small>
+        <small>{path.share.toFixed(2)}% | Path #{index + 1}</small>
       </header>
       <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`Claim journey ${index + 1}`}>
         <defs>
-          <marker id={`timeline-arrow-${index}`} markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
-            <path d="M0,0 L7,3.5 L0,7 Z" fill="#D35F21" />
+          <marker id={`timeline-arrow-${index}`} markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+            <path d="M0,0 L6,3 L0,6 Z" fill="#D35F21" />
           </marker>
         </defs>
         {Array.from({ length: Math.max(0, Math.floor((height - topPad * 2) / rowHeight)) }).map((_, gridIndex) => (
@@ -807,7 +811,20 @@ function TimelinePathColumn({
         ))}
         {transfers.map((transfer, transferIndex) => transfer.visible && (
           <g key={`transfer-${transferIndex}`}>
-            <path d={transfer.d} className={`timeline-transfer ${hoveredTransfer === transferIndex ? "hovered" : ""}`} markerEnd={`url(#timeline-arrow-${index})`} />
+            {!transfer.selfLoop && <path d={transfer.d} className={`timeline-transfer ${hoveredTransfer === transferIndex ? "hovered" : ""}`} markerEnd={`url(#timeline-arrow-${index})`} />}
+            <g className="timeline-event">
+              {transfer.selfLoop ? (
+                <>
+                  <circle cx={transfer.trackX - 5} cy={transfer.fromY} r="3.2" />
+                  <circle cx={transfer.trackX + 5} cy={transfer.fromY} r="3.2" />
+                </>
+              ) : (
+                <>
+                  <circle cx={transfer.trackX} cy={transfer.fromY} r="3.2" />
+                  <circle cx={transfer.trackX} cy={transfer.toY} r="3.2" />
+                </>
+              )}
+            </g>
             <path
               d={transfer.d}
               className="timeline-transfer-hit"
@@ -816,13 +833,9 @@ function TimelinePathColumn({
             />
           </g>
         ))}
-        {occurrences.map((event, eventIndex) => !hiddenRows.has(event.step) && (
-          <g key={`${event.step}-${event.stepIndex}`} className={event.isLoop ? "timeline-event loop" : "timeline-event"}>
-            <circle cx={event.x} cy={event.y} r={eventIndex === 0 ? 5 : 4.2} />
-            {eventIndex === 0 && <text x={event.x} y={event.y - 9}>Start</text>}
-            {eventIndex === occurrences.length - 1 && <text x={event.x} y={event.y + 15}>End</text>}
-          </g>
-        ))}
+        {!transfers.length && occurrences[0] && !hiddenRows.has(occurrences[0].step) && <g className="timeline-event"><circle cx={x} cy={occurrences[0].y} r="3.2" /></g>}
+        {occurrences[0] && !hiddenRows.has(occurrences[0].step) && <text className="timeline-terminal-label" x={startX} y={occurrences[0].y - 8}>Start</text>}
+        {occurrences[occurrences.length - 1] && !hiddenRows.has(occurrences[occurrences.length - 1].step) && <text className="timeline-terminal-label" x={endX} y={occurrences[occurrences.length - 1].y + 13}>End</text>}
       </svg>
       <footer>
         <span>{path.repeatedSteps ? `${path.repeatedSteps} loops` : "No loops"}</span>

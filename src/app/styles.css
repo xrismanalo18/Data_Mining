@@ -702,11 +702,11 @@ tbody tr:hover { background: #f8fafc; }
   min-width: max-content;
 }
 .timeline-path-column {
-  width: 108px;
-  min-width: 108px;
+  width: 120px;
+  min-width: 120px;
   display: grid;
   grid-template-rows: 56px auto 34px;
-  border-right: 1px solid var(--line);
+  border-right: 1px dashed #dfe6ec;
   background: #fbfdfe;
   cursor: pointer;
   transition: opacity 120ms ease, background-color 120ms ease;
@@ -744,12 +744,13 @@ tbody tr:hover { background: #f8fafc; }
 .timeline-transfer {
   fill: none;
   stroke: #d35f21;
-  stroke-width: 1.35;
-  opacity: .9;
+  stroke-width: 1.1;
+  opacity: .92;
   pointer-events: none;
   transition: stroke-width 100ms ease;
+  shape-rendering: geometricPrecision;
 }
-.timeline-transfer.hovered { stroke-width: 3; opacity: 1; }
+.timeline-transfer.hovered { stroke-width: 2.4; opacity: 1; }
 .timeline-transfer-hit {
   fill: none;
   stroke: transparent;
@@ -760,13 +761,14 @@ tbody tr:hover { background: #f8fafc; }
 .timeline-event circle {
   fill: #d35f21;
   stroke: #fff;
-  stroke-width: 1.5;
+  stroke-width: 1;
 }
 .timeline-event.loop circle {
   fill: #d35f21;
   stroke: #fff;
 }
-.timeline-event text {
+.timeline-event text,
+.timeline-terminal-label {
   fill: #182230;
   font-size: 8px;
   font-weight: 900;
