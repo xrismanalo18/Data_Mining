@@ -580,10 +580,34 @@ function PathCanvas({ paths }: { paths: PathItem[] }) {
 
 function PathTimeline({ paths, activities }: { paths: PathItem[]; activities: Analysis["activities"] }) {
   const rows = useMemo(() => buildTimelineRows(paths, activities), [paths, activities]);
-  const rowHeight = 46;
-  const topPad = 18;
-  const height = Math.max(260, rows.length * rowHeight + topPad * 2);
+  const [hiddenRows, setHiddenRows] = useState<Set<string>>(() => new Set());
+  const [hovered, setHovered] = useState<{
+    pathIndex: number;
+    transferIndex: number;
+    from: string;
+    to: string;
+    left: number;
+    top: number;
+  } | null>(null);
+  const rowHeight = 38;
+  const topPad = 12;
+  const height = Math.max(220, rows.length * rowHeight + topPad * 2);
   const laneMap = useMemo(() => new Map(rows.map((row, index) => [row.name, index])), [rows]);
+  const allRowsVisible = rows.every(row => !hiddenRows.has(row.name));
+  const toggleRow = (name: string) => {
+    setHiddenRows(current => {
+      const next = new Set(current);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  };
+  const toggleAllRows = () => setHiddenRows(allRowsVisible ? new Set(rows.map(row => row.name)) : new Set());
+  const showTransfer = (pathIndex: number, transferIndex: number, from: string, to: string, clientX: number, clientY: number) => {
+    const left = Math.max(12, Math.min(clientX + 14, window.innerWidth - 312));
+    const top = Math.max(12, Math.min(clientY + 14, window.innerHeight - 180));
+    setHovered({ pathIndex, transferIndex, from, to, left, top });
+  };
   if (!paths.length) {
     return <div className="empty-state explorer-empty"><strong>No paths detected</strong><p>Upload event data with case IDs, activities, and timestamps to render claim journeys.</p></div>;
   }
@@ -591,17 +615,21 @@ function PathTimeline({ paths, activities }: { paths: PathItem[]; activities: An
     <div className="timeline-shell">
       <div className="timeline-left">
         <div className="timeline-left-header">
-          <strong>Events / Queues</strong>
-          <span>{rows.length.toLocaleString()} lanes</span>
+          <label>
+            <input type="checkbox" checked={allRowsVisible} onChange={toggleAllRows} aria-label="Show all events and queues" />
+            <strong>Events / Queues</strong>
+          </label>
+          <span>{rows.length.toLocaleString()} lanes · all selected by default</span>
         </div>
         <div className="timeline-lane-spacer" style={{ height: topPad }} />
         {rows.map(row => (
-          <div className={`timeline-lane-label ${row.active ? "active" : ""}`} key={row.name}>
-            <span>{row.name}</span>
+          <label className={`timeline-lane-label ${row.active ? "active" : ""} ${hiddenRows.has(row.name) ? "disabled" : ""} ${hovered && (hovered.from === row.name || hovered.to === row.name) ? "hovered" : ""}`} key={row.name}>
+            <input type="checkbox" checked={!hiddenRows.has(row.name)} onChange={() => toggleRow(row.name)} aria-label={`Show ${row.name}`} />
             <b>{row.count.toLocaleString()}</b>
-          </div>
+            <span>{row.name}</span>
+          </label>
         ))}
-        <div className="timeline-lane-spacer" style={{ height: topPad + 42 }} />
+        <div className="timeline-lane-spacer" style={{ height: topPad + 34 }} />
       </div>
       <div className="timeline-main">
         <div className="timeline-paths">
@@ -614,10 +642,23 @@ function PathTimeline({ paths, activities }: { paths: PathItem[]; activities: An
               rowHeight={rowHeight}
               topPad={topPad}
               height={height}
+              hiddenRows={hiddenRows}
+              hoveredTransfer={hovered?.pathIndex === index ? hovered.transferIndex : null}
+              dimmed={hovered !== null && hovered.pathIndex !== index}
+              onTransferHover={(transferIndex, from, to, clientX, clientY) => showTransfer(index, transferIndex, from, to, clientX, clientY)}
+              onTransferLeave={() => setHovered(null)}
             />
           ))}
         </div>
       </div>
+      {hovered && (
+        <div className="timeline-tooltip" style={{ left: hovered.left, top: hovered.top }} role="status">
+          <span>Path #{hovered.pathIndex + 1} · Transfer {hovered.transferIndex + 1}</span>
+          <strong>{hovered.from} → {hovered.to}</strong>
+          <small>{paths[hovered.pathIndex].count.toLocaleString()} claims · {formatHours(paths[hovered.pathIndex].avgHours)}</small>
+          <p>{paths[hovered.pathIndex].path.join(" → ")}</p>
+        </div>
+      )}
     </div>
   );
 }
@@ -629,6 +670,11 @@ function TimelinePathColumn({
   rowHeight,
   topPad,
   height,
+  hiddenRows,
+  hoveredTransfer,
+  dimmed,
+  onTransferHover,
+  onTransferLeave,
 }: {
   path: PathItem;
   index: number;
@@ -636,8 +682,13 @@ function TimelinePathColumn({
   rowHeight: number;
   topPad: number;
   height: number;
+  hiddenRows: Set<string>;
+  hoveredTransfer: number | null;
+  dimmed: boolean;
+  onTransferHover: (transferIndex: number, from: string, to: string, clientX: number, clientY: number) => void;
+  onTransferLeave: () => void;
 }) {
-  const width = 176;
+  const width = 118;
   const x = width / 2;
   const occurrences = path.path
     .map((step, stepIndex) => {
@@ -647,7 +698,8 @@ function TimelinePathColumn({
       const next = stepIndex < path.path.length - 1 ? path.path[stepIndex + 1] : "";
       const sameAsPrevious = previous === step;
       const sameAsNext = next === step;
-      const loopOffset = sameAsPrevious ? 10 : sameAsNext ? -10 : 0;
+      const sequenceOffset = ((stepIndex % 3) - 1) * 4;
+      const loopOffset = sameAsPrevious ? 8 : sameAsNext ? -8 : sequenceOffset;
       return {
         step,
         stepIndex,
@@ -659,36 +711,47 @@ function TimelinePathColumn({
     .filter((item): item is NonNullable<typeof item> => Boolean(item));
   const transfers = occurrences.slice(0, -1).map((event, transferIndex) => {
     const next = occurrences[transferIndex + 1];
+    let d: string;
     if (event.step === next.step) {
-      return `M ${event.x} ${event.y} C ${event.x + 22} ${event.y - 18}, ${next.x - 22} ${next.y - 18}, ${next.x} ${next.y}`;
+      d = `M ${event.x} ${event.y} C ${event.x + 18} ${event.y - 15}, ${next.x - 18} ${next.y - 15}, ${next.x} ${next.y}`;
+    } else {
+      const direction = next.y >= event.y ? 1 : -1;
+      const bend = Math.min(18, Math.max(7, Math.abs(next.y - event.y) / 4));
+      d = `M ${event.x} ${event.y} C ${event.x} ${event.y + bend * direction}, ${next.x} ${next.y - bend * direction}, ${next.x} ${next.y}`;
     }
-    const bend = Math.abs(next.y - event.y) > rowHeight ? 18 : 8;
-    return `M ${event.x} ${event.y} C ${event.x} ${event.y + bend}, ${next.x} ${next.y - bend}, ${next.x} ${next.y}`;
+    return { d, from: event.step, to: next.step, visible: !hiddenRows.has(event.step) && !hiddenRows.has(next.step) };
   });
   return (
-    <article className="timeline-path-column">
+    <article className={`timeline-path-column ${dimmed ? "dimmed" : ""}`} onPointerLeave={onTransferLeave}>
       <header>
-        <span>#{index + 1}</span>
-        <strong>{path.count.toLocaleString()} claims</strong>
-        <small>{path.share.toFixed(2)}% | {formatHours(path.avgHours)}</small>
+        <strong>{path.share.toFixed(2)}% | {formatHours(path.avgHours)}</strong>
+        <small>Path #{index + 1} · {path.count.toLocaleString()} claims</small>
       </header>
       <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`Claim journey ${index + 1}`}>
         <defs>
-          <marker id={`timeline-arrow-${index}`} markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-            <path d="M0,0 L8,4 L0,8 Z" fill="#C75A1B" />
+          <marker id={`timeline-arrow-${index}`} markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+            <path d="M0,0 L7,3.5 L0,7 Z" fill="#D35F21" />
           </marker>
         </defs>
         {Array.from({ length: Math.max(0, Math.floor((height - topPad * 2) / rowHeight)) }).map((_, gridIndex) => (
           <line key={`grid-${gridIndex}`} x1="0" x2={width} y1={topPad + gridIndex * rowHeight + rowHeight / 2} y2={topPad + gridIndex * rowHeight + rowHeight / 2} className="timeline-row-line" />
         ))}
-        {transfers.map((d, transferIndex) => (
-          <path key={`transfer-${transferIndex}`} d={d} className="timeline-transfer" markerEnd={`url(#timeline-arrow-${index})`} />
+        {transfers.map((transfer, transferIndex) => transfer.visible && (
+          <g key={`transfer-${transferIndex}`}>
+            <path d={transfer.d} className={`timeline-transfer ${hoveredTransfer === transferIndex ? "hovered" : ""}`} markerEnd={`url(#timeline-arrow-${index})`} />
+            <path
+              d={transfer.d}
+              className="timeline-transfer-hit"
+              onPointerEnter={event => onTransferHover(transferIndex, transfer.from, transfer.to, event.clientX, event.clientY)}
+              onPointerMove={event => onTransferHover(transferIndex, transfer.from, transfer.to, event.clientX, event.clientY)}
+            />
+          </g>
         ))}
-        {occurrences.map((event, eventIndex) => (
+        {occurrences.map((event, eventIndex) => !hiddenRows.has(event.step) && (
           <g key={`${event.step}-${event.stepIndex}`} className={event.isLoop ? "timeline-event loop" : "timeline-event"}>
-            <circle cx={event.x} cy={event.y} r={eventIndex === 0 ? 6.2 : 5.4} />
-            {eventIndex === 0 && <text x={event.x} y={event.y - 12}>Start</text>}
-            {eventIndex === occurrences.length - 1 && <text x={event.x} y={event.y + 20}>End</text>}
+            <circle cx={event.x} cy={event.y} r={eventIndex === 0 ? 5 : 4.2} />
+            {eventIndex === 0 && <text x={event.x} y={event.y - 9}>Start</text>}
+            {eventIndex === occurrences.length - 1 && <text x={event.x} y={event.y + 15}>End</text>}
           </g>
         ))}
       </svg>
