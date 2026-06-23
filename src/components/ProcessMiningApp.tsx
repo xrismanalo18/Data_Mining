@@ -535,26 +535,25 @@ function Bottlenecks({ analysis }: { analysis: Analysis }) {
 }
 
 function Paths({ analysis }: { analysis: Analysis }) {
-  const [view, setView] = useState<"path" | "schema">("path");
-  const [segment, setSegment] = useState("All claims");
   const [sort, setSort] = useState<"volume" | "duration" | "loops">("duration");
-  const options = useMemo(() => getSegmentOptions(analysis), [analysis]);
   const paths = useMemo(() => {
-    const filtered = segment === "All claims" ? analysis.pathAnalysis : analysis.pathAnalysis.filter(item => item.path.includes(segment));
-    return [...filtered].sort((a, b) => sort === "duration" ? b.avgHours - a.avgHours : sort === "loops" ? b.repeatedSteps - a.repeatedSteps : b.count - a.count).slice(0, 12);
-  }, [analysis.pathAnalysis, segment, sort]);
+    return [...analysis.pathAnalysis]
+      .sort((a, b) => sort === "duration" ? b.avgHours - a.avgHours : sort === "loops" ? b.repeatedSteps - a.repeatedSteps : b.count - a.count)
+      .slice(0, 12);
+  }, [analysis.pathAnalysis, sort]);
+  const totalVisibleClaims = paths.reduce((sum, item) => sum + item.count, 0);
+  const visibleLoops = paths.reduce((sum, item) => sum + item.repeatedSteps, 0);
+  const weightedDuration = paths.reduce((sum, item) => sum + item.avgHours * item.count, 0) / Math.max(totalVisibleClaims, 1);
   return (
     <section className="card compact-analysis path-analysis">
       <div className="analysis-controlbar">
-        <div><span className="control-label">Path analysis</span><strong>{paths.length} paths</strong></div>
-        <div className="segmented-control">
-          <button className={view === "path" ? "active" : ""} onClick={() => setView("path")}>Path</button>
-          <button className={view === "schema" ? "active" : ""} onClick={() => setView("schema")}>Schema</button>
-        </div>
-        <label className="inline-select"><span>Segment</span><select value={segment} onChange={event => setSegment(event.target.value)}>{options.map(option => <option key={option}>{option}</option>)}</select></label>
+        <div><span className="control-label">Path analysis</span><strong>{paths.length} claim journeys</strong></div>
         <label className="inline-select"><span>Sort</span><select value={sort} onChange={event => setSort(event.target.value as typeof sort)}><option value="duration">Average duration</option><option value="volume">Claim volume</option><option value="loops">Self loops</option></select></label>
+        <div className="control-stat"><span>Visible claims</span><strong>{totalVisibleClaims.toLocaleString()}</strong></div>
+        <div className="control-stat"><span>Avg duration</span><strong>{formatHours(weightedDuration)}</strong></div>
+        <div className="control-stat"><span>Loop signals</span><strong>{visibleLoops.toLocaleString()}</strong></div>
       </div>
-      {view === "path" ? <PathCanvas paths={paths} /> : <SchemaCanvas paths={paths} />}
+      <PathTimeline paths={paths} activities={analysis.activities} />
     </section>
   );
 }
@@ -577,6 +576,152 @@ function PathCanvas({ paths }: { paths: PathItem[] }) {
       <footer><b>{item.share.toFixed(1)}%</b><span>{item.repeatedSteps ? `${item.repeatedSteps} loops` : "Direct"}</span></footer>
     </article>)}
   </div>;
+}
+
+function PathTimeline({ paths, activities }: { paths: PathItem[]; activities: Analysis["activities"] }) {
+  const rows = useMemo(() => buildTimelineRows(paths, activities), [paths, activities]);
+  const rowHeight = 46;
+  const topPad = 18;
+  const height = Math.max(260, rows.length * rowHeight + topPad * 2);
+  const laneMap = useMemo(() => new Map(rows.map((row, index) => [row.name, index])), [rows]);
+  if (!paths.length) {
+    return <div className="empty-state explorer-empty"><strong>No paths detected</strong><p>Upload event data with case IDs, activities, and timestamps to render claim journeys.</p></div>;
+  }
+  return (
+    <div className="timeline-shell">
+      <div className="timeline-left">
+        <div className="timeline-left-header">
+          <strong>Events / Queues</strong>
+          <span>{rows.length.toLocaleString()} lanes</span>
+        </div>
+        <div className="timeline-lane-spacer" style={{ height: topPad }} />
+        {rows.map(row => (
+          <div className={`timeline-lane-label ${row.active ? "active" : ""}`} key={row.name}>
+            <span>{row.name}</span>
+            <b>{row.count.toLocaleString()}</b>
+          </div>
+        ))}
+        <div className="timeline-lane-spacer" style={{ height: topPad + 42 }} />
+      </div>
+      <div className="timeline-main">
+        <div className="timeline-paths">
+          {paths.map((path, index) => (
+            <TimelinePathColumn
+              key={`${path.path.join("::")}-${index}`}
+              path={path}
+              index={index}
+              laneMap={laneMap}
+              rowHeight={rowHeight}
+              topPad={topPad}
+              height={height}
+            />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TimelinePathColumn({
+  path,
+  index,
+  laneMap,
+  rowHeight,
+  topPad,
+  height,
+}: {
+  path: PathItem;
+  index: number;
+  laneMap: Map<string, number>;
+  rowHeight: number;
+  topPad: number;
+  height: number;
+}) {
+  const width = 176;
+  const x = width / 2;
+  const occurrences = path.path
+    .map((step, stepIndex) => {
+      const rowIndex = laneMap.get(step);
+      if (rowIndex === undefined) return null;
+      const previous = stepIndex > 0 ? path.path[stepIndex - 1] : "";
+      const next = stepIndex < path.path.length - 1 ? path.path[stepIndex + 1] : "";
+      const sameAsPrevious = previous === step;
+      const sameAsNext = next === step;
+      const loopOffset = sameAsPrevious ? 10 : sameAsNext ? -10 : 0;
+      return {
+        step,
+        stepIndex,
+        x: x + loopOffset,
+        y: topPad + rowIndex * rowHeight + rowHeight / 2,
+        isLoop: sameAsPrevious || sameAsNext || path.path.indexOf(step) < stepIndex,
+      };
+    })
+    .filter((item): item is NonNullable<typeof item> => Boolean(item));
+  const transfers = occurrences.slice(0, -1).map((event, transferIndex) => {
+    const next = occurrences[transferIndex + 1];
+    if (event.step === next.step) {
+      return `M ${event.x} ${event.y} C ${event.x + 22} ${event.y - 18}, ${next.x - 22} ${next.y - 18}, ${next.x} ${next.y}`;
+    }
+    const bend = Math.abs(next.y - event.y) > rowHeight ? 18 : 8;
+    return `M ${event.x} ${event.y} C ${event.x} ${event.y + bend}, ${next.x} ${next.y - bend}, ${next.x} ${next.y}`;
+  });
+  return (
+    <article className="timeline-path-column">
+      <header>
+        <span>#{index + 1}</span>
+        <strong>{path.count.toLocaleString()} claims</strong>
+        <small>{path.share.toFixed(2)}% | {formatHours(path.avgHours)}</small>
+      </header>
+      <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`Claim journey ${index + 1}`}>
+        <defs>
+          <marker id={`timeline-arrow-${index}`} markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+            <path d="M0,0 L8,4 L0,8 Z" fill="#C75A1B" />
+          </marker>
+        </defs>
+        {Array.from({ length: Math.max(0, Math.floor((height - topPad * 2) / rowHeight)) }).map((_, gridIndex) => (
+          <line key={`grid-${gridIndex}`} x1="0" x2={width} y1={topPad + gridIndex * rowHeight + rowHeight / 2} y2={topPad + gridIndex * rowHeight + rowHeight / 2} className="timeline-row-line" />
+        ))}
+        {transfers.map((d, transferIndex) => (
+          <path key={`transfer-${transferIndex}`} d={d} className="timeline-transfer" markerEnd={`url(#timeline-arrow-${index})`} />
+        ))}
+        {occurrences.map((event, eventIndex) => (
+          <g key={`${event.step}-${event.stepIndex}`} className={event.isLoop ? "timeline-event loop" : "timeline-event"}>
+            <circle cx={event.x} cy={event.y} r={eventIndex === 0 ? 6.2 : 5.4} />
+            {eventIndex === 0 && <text x={event.x} y={event.y - 12}>Start</text>}
+            {eventIndex === occurrences.length - 1 && <text x={event.x} y={event.y + 20}>End</text>}
+          </g>
+        ))}
+      </svg>
+      <footer>
+        <span>{path.repeatedSteps ? `${path.repeatedSteps} loops` : "No loops"}</span>
+        <b>{path.path.length} events</b>
+      </footer>
+    </article>
+  );
+}
+
+function buildTimelineRows(paths: PathItem[], activities: Analysis["activities"]) {
+  const rowSignals = new Map<string, { firstPosition: number; weightedPosition: number; pathHits: number; occurrences: number }>();
+  paths.forEach(path => path.path.forEach((step, index) => {
+    const value = rowSignals.get(step) || { firstPosition: index, weightedPosition: 0, pathHits: 0, occurrences: 0 };
+    value.firstPosition = Math.min(value.firstPosition, index);
+    value.weightedPosition += index * Math.max(path.count, 1);
+    value.pathHits += Math.max(path.count, 1);
+    value.occurrences += 1;
+    rowSignals.set(step, value);
+  }));
+  return activities
+    .map(activity => {
+      const signal = rowSignals.get(activity.name);
+      return {
+        name: activity.name,
+        count: activity.count,
+        active: Boolean(signal),
+        order: signal ? signal.weightedPosition / Math.max(signal.pathHits, 1) : Number.MAX_SAFE_INTEGER,
+        firstPosition: signal?.firstPosition ?? Number.MAX_SAFE_INTEGER,
+      };
+    })
+    .sort((a, b) => a.firstPosition - b.firstPosition || a.order - b.order || b.count - a.count || a.name.localeCompare(b.name));
 }
 
 function SchemaCanvas({ paths }: { paths: PathItem[] }) {

@@ -503,6 +503,157 @@ tbody tr:hover { background: #f8fafc; }
 .path-loop { position: absolute; left: -13px; top: 5px; width: 22px; height: 22px; display: grid; place-items: center; border-radius: 50%; color: #fff; background: #16a34a; font-size: 13px; font-style: normal; }
 .path-column footer { display: flex; justify-content: space-between; gap: 8px; padding: 9px 10px; border-top: 1px solid var(--line); background: #fff; font-size: 10px; }
 .path-column footer span { color: var(--muted); }
+.timeline-shell {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  min-height: 560px;
+  overflow: hidden;
+  border-top: 1px solid var(--line);
+  background: #fbfdfe;
+}
+.timeline-left {
+  position: relative;
+  z-index: 2;
+  min-width: 0;
+  border-right: 1px solid var(--line);
+  background: #fff;
+}
+.timeline-left-header,
+.timeline-path-column header {
+  height: 64px;
+  display: grid;
+  align-content: center;
+  gap: 3px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  background: #fff;
+}
+.timeline-left-header strong,
+.timeline-path-column header strong {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.timeline-left-header span,
+.timeline-path-column header small {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 750;
+}
+.timeline-lane-label {
+  height: 46px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border-bottom: 1px solid #e7edf3;
+  color: #475467;
+  background: #f9fbfd;
+}
+.timeline-lane-label.active {
+  color: #182230;
+  background: #fff;
+}
+.timeline-lane-label span {
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 850;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.timeline-lane-label b {
+  min-width: 28px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  color: #475467;
+  background: #e4e7ec;
+  font-size: 9px;
+}
+.timeline-lane-label.active b {
+  color: #0f766e;
+  background: #dff7f9;
+}
+.timeline-main {
+  min-width: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.timeline-paths {
+  display: flex;
+  align-items: stretch;
+  min-width: max-content;
+}
+.timeline-path-column {
+  width: 176px;
+  min-width: 176px;
+  display: grid;
+  grid-template-rows: 64px auto 42px;
+  border-right: 1px solid var(--line);
+  background: #fbfdfe;
+}
+.timeline-path-column header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.timeline-path-column header > span {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: #0f766e;
+  background: #e6f7f8;
+  font-size: 10px;
+  font-weight: 900;
+}
+.timeline-path-column svg {
+  display: block;
+  background:
+    linear-gradient(90deg, rgba(148, 163, 184, .16) 1px, transparent 1px) 0 0 / 44px 100%,
+    #fbfdfe;
+}
+.timeline-row-line {
+  stroke: #dbe3ea;
+  stroke-width: 1;
+}
+.timeline-transfer {
+  fill: none;
+  stroke: #c75a1b;
+  stroke-width: 1.7;
+  opacity: .86;
+}
+.timeline-event circle {
+  fill: #c75a1b;
+  stroke: #fff;
+  stroke-width: 2;
+}
+.timeline-event.loop circle {
+  fill: #0ea5a8;
+  stroke: #dff7f9;
+}
+.timeline-event text {
+  fill: #344054;
+  font-size: 9px;
+  font-weight: 900;
+  text-anchor: middle;
+}
+.timeline-path-column footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 10px;
+  border-top: 1px solid var(--line);
+  background: #fff;
+  font-size: 10px;
+}
+.timeline-path-column footer span { color: #0f766e; font-weight: 850; }
+.timeline-path-column footer b { color: #344054; }
 .schema-canvas { display: grid; gap: 1px; padding: 18px; background: #eef2f7; }
 .schema-row {
   display: grid;
@@ -977,6 +1128,11 @@ tbody tr:hover { background: #f8fafc; }
   .map-signal-strip { align-items: flex-start; flex-direction: column; gap: 7px; }
   .schema-row { grid-template-columns: 65px minmax(135px, 1fr) 65px; }
   .schema-volume { display: none; }
+  .timeline-shell { grid-template-columns: 220px minmax(0, 1fr); }
+  .timeline-left-header, .timeline-path-column header { height: 58px; }
+  .timeline-left { min-width: 220px; }
+  .timeline-lane-label { padding: 0 8px; }
+  .timeline-path-column { grid-template-rows: 58px auto 42px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .flow-token { display: none !important; }
