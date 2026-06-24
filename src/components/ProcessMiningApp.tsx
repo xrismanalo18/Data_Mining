@@ -363,7 +363,7 @@ function MapPanel({ analysis }: { analysis: Analysis }) {
   const filtered = useMemo(() => filterAnalysisBySegment(analysis, segment), [analysis, segment]);
   const [zoom, setZoom] = useState(0.5);
   const [playing, setPlaying] = useState(true);
-  const [speed, setSpeed] = useState(1);
+  const [speed, setSpeed] = useState(2);
   const mapContentRef = useRef<HTMLDivElement>(null);
   const map = useMemo(() => buildMapSvg(filtered, speed), [filtered, speed]);
   const selfLoops = filtered.transitions.filter(item => item.from === item.to).sort((a, b) => b.caseCount - a.caseCount);
@@ -393,7 +393,7 @@ function MapPanel({ analysis }: { analysis: Analysis }) {
         <div className="control-stat"><span>Queues</span><strong>{filtered.activities.length}</strong></div>
         <div className="map-motion-controls" aria-label="Map animation controls">
           <button type="button" onClick={() => setPlaying(current => !current)} aria-label={playing ? "Pause timeline" : "Play timeline"} title={playing ? "Pause timeline" : "Play timeline"}>{playing ? "Ⅱ" : "▶"}</button>
-          <button type="button" onClick={() => setSpeed(current => current >= 2 ? 0.5 : current + 0.5)} title="Change animation speed">{speed}×</button>
+          <button type="button" onClick={() => setSpeed(current => current >= 4 ? 1 : current + 1)} title="Change animation speed">{speed}×</button>
         </div>
         <div className="map-zoom-controls" aria-label="Map zoom controls">
           <button type="button" onClick={() => changeZoom(-0.15)} disabled={zoom <= 0.3} aria-label="Zoom out">-</button>
@@ -549,12 +549,16 @@ function buildMapSvg(analysis: MapAnalysis, speed = 1): { svg: string; width: nu
       path = `M ${startX} ${y1} C ${startX - 90} ${controlY}, ${endX + 90} ${controlY}, ${endX} ${y2}`;
     }
     const tokenCount = Math.min(5, Math.max(1, 1 + Math.floor(weight * 4)));
-    const duration = Math.max(2.2, 8.5 - weight * 3.5 + transition.avgHours / maxWait * 3) / speed;
+    const baseDuration = Math.max(2.2, 8.5 - weight * 3.5 + transition.avgHours / maxWait * 3);
     const ageBand = Math.min(3, Math.floor(transition.avgHours / maxWait * 4));
     const tokens = Array.from({ length: tokenCount }, (_, tokenIndex) => {
-      const color = palette[Math.min(3, ageBand + Math.floor(tokenIndex / 3))];
+      const tokenBand = Math.min(3, ageBand + Math.floor(tokenIndex / 3));
+      const color = palette[tokenBand];
+      const ageSpeed = [5, 2, 1.3, .8][tokenBand] * (speed / 2);
+      const duration = baseDuration / ageSpeed;
       const offset = duration / tokenCount * tokenIndex;
-      return `<circle class="map-token" r="${(2.3 + weight * 1.3).toFixed(2)}" fill="${color}" opacity=".95"><animateMotion dur="${duration.toFixed(2)}s" begin="-${offset.toFixed(2)}s" repeatCount="indefinite"><mpath href="#${pathId}" /></animateMotion></circle>`;
+      const radius = (2.3 + weight * 1.3) * (isLoop ? 1.7 : 1);
+      return `<circle class="map-token${isLoop ? " self-loop-token" : ""}" r="${radius.toFixed(2)}" fill="${color}" stroke="${isLoop ? "#FFFFFF" : "none"}" stroke-width="${isLoop ? "1.2" : "0"}" opacity=".96"><animateMotion dur="${duration.toFixed(2)}s" begin="-${offset.toFixed(2)}s" repeatCount="indefinite"><mpath href="#${pathId}" /></animateMotion></circle>`;
     }).join("");
     const label = isLoop
       ? `<text class="map-edge-label" x="${x1}" y="${y1 - 29}" text-anchor="middle">${transition.caseCount.toLocaleString()}</text>`

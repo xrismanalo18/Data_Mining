@@ -256,9 +256,10 @@ tbody tr:hover { background: #f8fafc; }
   opacity: 1;
   filter: drop-shadow(0 0 2px rgba(15, 118, 110, .3));
 }
-.process-edge-group:hover .map-token { r: 5px; }
+.process-edge-group:hover .map-token { filter: drop-shadow(0 0 2px rgba(15, 118, 110, .45)); }
 .process-edge-hit { pointer-events: stroke; cursor: help; }
 .map-token { pointer-events: none; }
+.self-loop-token { filter: drop-shadow(0 0 1px rgba(21, 128, 61, .5)); }
 .map-edge-label {
   fill: #344054;
   font-size: 9px;
