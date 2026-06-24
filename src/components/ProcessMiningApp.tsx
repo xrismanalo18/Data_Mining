@@ -361,7 +361,7 @@ function MapPanel({ analysis }: { analysis: Analysis }) {
   const segmentOptions = useMemo(() => getSegmentOptions(analysis), [analysis]);
   const [segment, setSegment] = useState("All claims");
   const filtered = useMemo(() => filterAnalysisBySegment(analysis, segment), [analysis, segment]);
-  const [zoom, setZoom] = useState(0.55);
+  const [zoom, setZoom] = useState(0.5);
   const [playing, setPlaying] = useState(true);
   const [speed, setSpeed] = useState(1);
   const mapContentRef = useRef<HTMLDivElement>(null);
@@ -399,7 +399,7 @@ function MapPanel({ analysis }: { analysis: Analysis }) {
           <button type="button" onClick={() => changeZoom(-0.15)} disabled={zoom <= 0.3} aria-label="Zoom out">-</button>
           <span>{zoomPercent}%</span>
           <button type="button" onClick={() => changeZoom(0.15)} disabled={zoom >= 1.8} aria-label="Zoom in">+</button>
-          <button type="button" onClick={() => setZoom(0.55)}>Reset</button>
+          <button type="button" onClick={() => setZoom(0.5)}>Reset</button>
         </div>
       </div>
       <div className="map-signal-strip">
@@ -446,52 +446,74 @@ function buildMapSvg(analysis: MapAnalysis, speed = 1): { svg: string; width: nu
   const activities = [...new Set(transitions.flatMap(item => [item.from, item.to]))];
   const volume = new Map(analysis.activities.map(item => [item.name, item.count]));
   const adjacency = new Map<string, string[]>();
+  const reverseAdjacency = new Map<string, string[]>();
   transitions.forEach(transition => {
     if (transition.from === transition.to) return;
     const targets = adjacency.get(transition.from) || [];
     targets.push(transition.to);
     adjacency.set(transition.from, targets);
+    const sources = reverseAdjacency.get(transition.to) || [];
+    sources.push(transition.from);
+    reverseAdjacency.set(transition.to, sources);
   });
 
-  const depth = new Map<string, number>();
-  const queue = analysis.starts.map(item => item.name).filter(name => activities.includes(name));
-  if (!queue.length && activities.length) queue.push([...activities].sort((a, b) => (volume.get(b) || 0) - (volume.get(a) || 0))[0]);
-  queue.forEach(name => depth.set(name, 0));
-  for (let cursor = 0; cursor < queue.length; cursor += 1) {
-    const source = queue[cursor];
-    const nextDepth = (depth.get(source) || 0) + 1;
-    (adjacency.get(source) || []).forEach(target => {
-      if (!depth.has(target)) {
-        depth.set(target, nextDepth);
-        queue.push(target);
-      }
-    });
-  }
-  const maxDepth = Math.max(...depth.values(), 1);
-  const layerCount = Math.max(3, Math.min(7, maxDepth + 1));
-  const layers = Array.from({ length: layerCount }, () => [] as string[]);
-  activities.forEach((activity, index) => {
-    const rawDepth = depth.get(activity);
-    const rank = rawDepth === undefined
-      ? 1 + index % Math.max(1, layerCount - 2)
-      : Math.min(layerCount - 1, Math.round(rawDepth / maxDepth * (layerCount - 1)));
-    layers[rank].push(activity);
+  const weightedDegree = new Map<string, number>();
+  transitions.forEach(transition => {
+    weightedDegree.set(transition.from, (weightedDegree.get(transition.from) || 0) + transition.count);
+    weightedDegree.set(transition.to, (weightedDegree.get(transition.to) || 0) + transition.count);
   });
-  layers.forEach(layer => layer.sort((a, b) => (volume.get(b) || 0) - (volume.get(a) || 0)));
+  const hub = [...activities].sort((a, b) => (weightedDegree.get(b) || 0) - (weightedDegree.get(a) || 0) || (volume.get(b) || 0) - (volume.get(a) || 0))[0];
+  const distances = (start: string, graph: Map<string, string[]>) => {
+    const result = new Map<string, number>([[start, 0]]);
+    const pending = [start];
+    for (let cursor = 0; cursor < pending.length; cursor += 1) {
+      const source = pending[cursor];
+      (graph.get(source) || []).forEach(target => {
+        if (!result.has(target)) {
+          result.set(target, (result.get(source) || 0) + 1);
+          pending.push(target);
+        }
+      });
+    }
+    return result;
+  };
+  const downstreamDistance = distances(hub, adjacency);
+  const upstreamDistance = distances(hub, reverseAdjacency);
+  const startNames = new Set(analysis.starts.map(item => item.name));
+  const endNames = new Set(analysis.ends.map(item => item.name));
+  const upstream: string[] = [];
+  const downstream: string[] = [];
+  activities.filter(activity => activity !== hub).forEach(activity => {
+    const upstreamSteps = upstreamDistance.get(activity);
+    const downstreamSteps = downstreamDistance.get(activity);
+    if (startNames.has(activity) && !endNames.has(activity)) upstream.push(activity);
+    else if (endNames.has(activity) && !startNames.has(activity)) downstream.push(activity);
+    else if (upstreamSteps !== undefined && (downstreamSteps === undefined || upstreamSteps < downstreamSteps)) upstream.push(activity);
+    else if (downstreamSteps !== undefined) downstream.push(activity);
+    else (upstream.length <= downstream.length ? upstream : downstream).push(activity);
+  });
+  upstream.sort((a, b) => (upstreamDistance.get(a) || 99) - (upstreamDistance.get(b) || 99) || (volume.get(b) || 0) - (volume.get(a) || 0));
+  downstream.sort((a, b) => (downstreamDistance.get(a) || 99) - (downstreamDistance.get(b) || 99) || (volume.get(b) || 0) - (volume.get(a) || 0));
 
-  const width = 2060;
-  const largestLayer = Math.max(...layers.map(layer => layer.length), 1);
-  const height = Math.max(780, largestLayer * 78 + 180);
-  const centerY = height / 2;
+  const upstreamColumns = Math.max(1, Math.ceil(upstream.length / 3));
+  const downstreamColumns = Math.max(1, Math.ceil(downstream.length / 3));
+  const sideColumns = Math.max(upstreamColumns, downstreamColumns);
+  const width = Math.max(2420, 940 + sideColumns * 500);
+  const height = 900;
+  const centerY = 470;
+  const hubX = width / 2;
   const positions = new Map<string, [number, number]>();
-  layers.forEach((layer, rank) => {
-    const spacing = Math.min(82, (height - 180) / Math.max(layer.length - 1, 1));
-    const offsets = layer.map((_, index) => index === 0 ? 0 : Math.ceil(index / 2) * (index % 2 ? -1 : 1));
-    layer.forEach((activity, index) => {
-      const x = 250 + rank * ((width - 500) / Math.max(layerCount - 1, 1));
-      positions.set(activity, [x, centerY + offsets[index] * spacing]);
+  const laneOffsets = [0, -92, 92];
+  if (hub) positions.set(hub, [hubX, centerY]);
+  const placeSide = (items: string[], direction: -1 | 1) => {
+    items.forEach((activity, index) => {
+      const column = Math.floor(index / 3);
+      const lane = index % 3;
+      positions.set(activity, [hubX + direction * (270 + column * 245), centerY + laneOffsets[lane]]);
     });
-  });
+  };
+  placeSide(upstream, -1);
+  placeSide(downstream, 1);
 
   const maxCount = Math.max(...transitions.map(item => item.count), 1);
   const maxWait = Math.max(...transitions.map(item => item.avgHours), 1);
@@ -508,8 +530,8 @@ function buildMapSvg(analysis: MapAnalysis, speed = 1): { svg: string; width: nu
     if (isLoop) {
       const direction = index % 2 ? -1 : 1;
       const anchorX = x1 + direction * 70;
-      const controlX = x1 + direction * (125 + weight * 55);
-      const loopHeight = 58 + weight * 76;
+      const controlX = x1 + direction * (102 + weight * 42);
+      const loopHeight = 34 + weight * 48;
       path = `M ${anchorX} ${y1 - 11} C ${controlX} ${y1 - loopHeight}, ${controlX} ${y1 + loopHeight}, ${anchorX} ${y1 + 11}`;
     } else if (x2 > x1 + 10) {
       const startX = x1 + 76;
@@ -550,24 +572,24 @@ function buildMapSvg(analysis: MapAnalysis, speed = 1): { svg: string; width: nu
     return `<g class="process-node"><title>${escapeHtml(activity)} | ${count.toLocaleString()} events</title><rect x="${x - 76}" y="${y - 15}" width="152" height="30" rx="15"/><circle cx="${x - 61}" cy="${y}" r="9"/><text class="node-count" x="${x - 61}" y="${y + 3}">${compact(count)}</text><text class="node-label" x="${x - 47}" y="${y + 3}">${escapeHtml(label)}</text></g>`;
   }).join("");
 
-  const startX = 65;
-  const endX = width - 65;
-  const startY = centerY;
-  const endY = centerY;
+  const startX = Math.min(width - 260, hubX + 510);
+  const endX = Math.min(width - 170, hubX + 690);
+  const startY = 82;
+  const endY = height - 72;
   const maxStart = Math.max(...analysis.starts.map(item => item.count), 1);
   const maxEnd = Math.max(...analysis.ends.map(item => item.count), 1);
   const startSvg = analysis.starts.slice(0, 8).map((item, index) => {
     const target = positions.get(item.name);
     if (!target) return "";
     const edgeWidth = 1 + Math.sqrt(item.count / maxStart) * 4;
-    const path = `M ${startX + 13} ${startY} C ${startX + 85} ${startY}, ${target[0] - 150} ${target[1]}, ${target[0] - 77} ${target[1]}`;
+    const path = `M ${startX} ${startY + 13} C ${startX} ${startY + 110}, ${target[0]} ${target[1] - 105}, ${target[0]} ${target[1] - 16}`;
     return `<path class="terminal-edge" d="${path}" fill="none" stroke="#35AFC0" stroke-width="${edgeWidth.toFixed(2)}" opacity=".66" marker-end="url(#arrow)"><title>Start to ${escapeHtml(item.name)} | ${item.count.toLocaleString()} claims</title></path>`;
   }).join("");
   const endSvg = analysis.ends.slice(0, 8).map(item => {
     const source = positions.get(item.name);
     if (!source) return "";
     const edgeWidth = 1 + Math.sqrt(item.count / maxEnd) * 4;
-    const path = `M ${source[0] + 77} ${source[1]} C ${source[0] + 150} ${source[1]}, ${endX - 85} ${endY}, ${endX - 13} ${endY}`;
+    const path = `M ${source[0]} ${source[1] + 16} C ${source[0]} ${source[1] + 105}, ${endX} ${endY - 110}, ${endX} ${endY - 13}`;
     return `<path class="terminal-edge" d="${path}" fill="none" stroke="#35AFC0" stroke-width="${edgeWidth.toFixed(2)}" opacity=".66" marker-end="url(#arrow)"><title>${escapeHtml(item.name)} to End | ${item.count.toLocaleString()} claims</title></path>`;
   }).join("");
   const terminalSvg = `<g class="map-terminal"><circle cx="${startX}" cy="${startY}" r="12"/><text x="${startX}" y="${startY - 20}">Start</text></g><g class="map-terminal end"><circle cx="${endX}" cy="${endY}" r="12"/><path d="M ${endX - 4} ${endY - 4} L ${endX + 4} ${endY + 4} M ${endX + 4} ${endY - 4} L ${endX - 4} ${endY + 4}"/><text x="${endX}" y="${endY - 20}">End</text></g>`;
