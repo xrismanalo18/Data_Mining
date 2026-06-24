@@ -495,21 +495,20 @@ function buildMapSvg(analysis: MapAnalysis, speed = 1): { svg: string; width: nu
   upstream.sort((a, b) => (upstreamDistance.get(a) || 99) - (upstreamDistance.get(b) || 99) || (volume.get(b) || 0) - (volume.get(a) || 0));
   downstream.sort((a, b) => (downstreamDistance.get(a) || 99) - (downstreamDistance.get(b) || 99) || (volume.get(b) || 0) - (volume.get(a) || 0));
 
-  const upstreamColumns = Math.max(1, Math.ceil(upstream.length / 3));
-  const downstreamColumns = Math.max(1, Math.ceil(downstream.length / 3));
-  const sideColumns = Math.max(upstreamColumns, downstreamColumns);
-  const width = Math.max(2420, 940 + sideColumns * 500);
-  const height = 900;
-  const centerY = 470;
+  const width = Math.max(2800, activities.length * 140);
+  const height = 1160;
+  const centerY = 610;
   const hubX = width / 2;
   const positions = new Map<string, [number, number]>();
-  const laneOffsets = [0, -92, 92];
+  const laneOffsets = [0, -82, 82, -41, 41];
   if (hub) positions.set(hub, [hubX, centerY]);
   const placeSide = (items: string[], direction: -1 | 1) => {
+    const innerX = hubX + direction * 235;
+    const outerX = direction < 0 ? 150 : width - 150;
     items.forEach((activity, index) => {
-      const column = Math.floor(index / 3);
-      const lane = index % 3;
-      positions.set(activity, [hubX + direction * (270 + column * 245), centerY + laneOffsets[lane]]);
+      const progress = items.length === 1 ? 0 : index / (items.length - 1);
+      const x = innerX + (outerX - innerX) * progress;
+      positions.set(activity, [x, centerY + laneOffsets[index % laneOffsets.length]]);
     });
   };
   placeSide(upstream, -1);
@@ -523,8 +522,8 @@ function buildMapSvg(analysis: MapAnalysis, speed = 1): { svg: string; width: nu
     const [x2, y2] = positions.get(transition.to) || [0, 0];
     const isLoop = transition.from === transition.to;
     const weight = Math.sqrt(transition.count / maxCount);
-    const strokeWidth = .8 + weight * 7.2 + (isLoop ? .8 : 0);
-    const opacity = .2 + weight * .7;
+    const strokeWidth = .6 + weight * 3.4 + (isLoop ? .35 : 0);
+    const opacity = .18 + weight * .68;
     const pathId = `process-edge-${index}`;
     let path: string;
     if (isLoop) {
@@ -555,7 +554,7 @@ function buildMapSvg(analysis: MapAnalysis, speed = 1): { svg: string; width: nu
     const tokens = Array.from({ length: tokenCount }, (_, tokenIndex) => {
       const color = palette[Math.min(3, ageBand + Math.floor(tokenIndex / 3))];
       const offset = duration / tokenCount * tokenIndex;
-      return `<circle class="map-token" r="${(2.6 + weight * 1.8).toFixed(2)}" fill="${color}" opacity=".95"><animateMotion dur="${duration.toFixed(2)}s" begin="-${offset.toFixed(2)}s" repeatCount="indefinite"><mpath href="#${pathId}" /></animateMotion></circle>`;
+      return `<circle class="map-token" r="${(2.3 + weight * 1.3).toFixed(2)}" fill="${color}" opacity=".95"><animateMotion dur="${duration.toFixed(2)}s" begin="-${offset.toFixed(2)}s" repeatCount="indefinite"><mpath href="#${pathId}" /></animateMotion></circle>`;
     }).join("");
     const label = isLoop
       ? `<text class="map-edge-label" x="${x1}" y="${y1 - 29}" text-anchor="middle">${transition.caseCount.toLocaleString()}</text>`
@@ -581,14 +580,14 @@ function buildMapSvg(analysis: MapAnalysis, speed = 1): { svg: string; width: nu
   const startSvg = analysis.starts.slice(0, 8).map((item, index) => {
     const target = positions.get(item.name);
     if (!target) return "";
-    const edgeWidth = 1 + Math.sqrt(item.count / maxStart) * 4;
+    const edgeWidth = .7 + Math.sqrt(item.count / maxStart) * 2.3;
     const path = `M ${startX} ${startY + 13} C ${startX} ${startY + 110}, ${target[0]} ${target[1] - 105}, ${target[0]} ${target[1] - 16}`;
     return `<path class="terminal-edge" d="${path}" fill="none" stroke="#35AFC0" stroke-width="${edgeWidth.toFixed(2)}" opacity=".66" marker-end="url(#arrow)"><title>Start to ${escapeHtml(item.name)} | ${item.count.toLocaleString()} claims</title></path>`;
   }).join("");
   const endSvg = analysis.ends.slice(0, 8).map(item => {
     const source = positions.get(item.name);
     if (!source) return "";
-    const edgeWidth = 1 + Math.sqrt(item.count / maxEnd) * 4;
+    const edgeWidth = .7 + Math.sqrt(item.count / maxEnd) * 2.3;
     const path = `M ${source[0]} ${source[1] + 16} C ${source[0]} ${source[1] + 105}, ${endX} ${endY - 110}, ${endX} ${endY - 13}`;
     return `<path class="terminal-edge" d="${path}" fill="none" stroke="#35AFC0" stroke-width="${edgeWidth.toFixed(2)}" opacity=".66" marker-end="url(#arrow)"><title>${escapeHtml(item.name)} to End | ${item.count.toLocaleString()} claims</title></path>`;
   }).join("");
