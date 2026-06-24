@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import DeepDiveSolution, { type ClaimsAnalysis } from "@/components/DeepDiveSolution";
 
@@ -362,7 +362,10 @@ function MapPanel({ analysis }: { analysis: Analysis }) {
   const [segment, setSegment] = useState("All claims");
   const filtered = useMemo(() => filterAnalysisBySegment(analysis, segment), [analysis, segment]);
   const [zoom, setZoom] = useState(0.55);
-  const map = useMemo(() => buildMapSvg(filtered), [filtered]);
+  const [playing, setPlaying] = useState(true);
+  const [speed, setSpeed] = useState(1);
+  const mapContentRef = useRef<HTMLDivElement>(null);
+  const map = useMemo(() => buildMapSvg(filtered, speed), [filtered, speed]);
   const selfLoops = filtered.transitions.filter(item => item.from === item.to).sort((a, b) => b.caseCount - a.caseCount);
   const start = filtered.starts[0];
   const end = filtered.ends[0];
@@ -370,6 +373,11 @@ function MapPanel({ analysis }: { analysis: Analysis }) {
   const changeZoom = (amount: number) => {
     setZoom(current => Math.min(1.8, Math.max(0.3, Number((current + amount).toFixed(2)))));
   };
+  useEffect(() => {
+    const svg = mapContentRef.current?.querySelector("svg") as (SVGSVGElement & { pauseAnimations?: () => void; unpauseAnimations?: () => void }) | null;
+    if (playing) svg?.unpauseAnimations?.();
+    else svg?.pauseAnimations?.();
+  }, [map.svg, playing]);
   return (
     <section className="card process-map-card">
       <div className="analysis-controlbar">
@@ -383,6 +391,10 @@ function MapPanel({ analysis }: { analysis: Analysis }) {
         <div className="control-stat"><span>Claims</span><strong>{filtered.caseCount.toLocaleString()}</strong></div>
         <div className="control-stat"><span>Self-loop claims</span><strong>{selfLoops.reduce((sum, item) => sum + item.caseCount, 0).toLocaleString()}</strong></div>
         <div className="control-stat"><span>Queues</span><strong>{filtered.activities.length}</strong></div>
+        <div className="map-motion-controls" aria-label="Map animation controls">
+          <button type="button" onClick={() => setPlaying(current => !current)} aria-label={playing ? "Pause timeline" : "Play timeline"} title={playing ? "Pause timeline" : "Play timeline"}>{playing ? "Ⅱ" : "▶"}</button>
+          <button type="button" onClick={() => setSpeed(current => current >= 2 ? 0.5 : current + 0.5)} title="Change animation speed">{speed}×</button>
+        </div>
         <div className="map-zoom-controls" aria-label="Map zoom controls">
           <button type="button" onClick={() => changeZoom(-0.15)} disabled={zoom <= 0.3} aria-label="Zoom out">-</button>
           <span>{zoomPercent}%</span>
@@ -394,11 +406,12 @@ function MapPanel({ analysis }: { analysis: Analysis }) {
         <span className="start-signal"><i /> Start: <strong>{start?.name || "No start detected"}</strong> {start ? `(${start.count.toLocaleString()})` : ""}</span>
         <span className="loop-signal"><i /> Loops: <strong>{selfLoops[0]?.from || "None"}</strong> {selfLoops[0] ? `(${selfLoops[0].caseCount.toLocaleString()} claims)` : ""}</span>
         <span className="end-signal"><i /> End: <strong>{end?.name || "No end detected"}</strong> {end ? `(${end.count.toLocaleString()})` : ""}</span>
+        <span className="map-age-key"><small>New</small><b /><small>Old</small></span>
       </div>
       <div className="map-wrap">
         <div className="map-canvas">
           <div className="map-scaler" style={{ width: map.width * zoom, height: map.height * zoom }}>
-            <div className="map-content" dangerouslySetInnerHTML={{ __html: map.svg }} />
+            <div ref={mapContentRef} className="map-content" dangerouslySetInnerHTML={{ __html: map.svg }} />
           </div>
         </div>
       </div>
@@ -426,69 +439,141 @@ type MapAnalysis = {
   ends: { name: string; count: number }[];
 };
 
-function buildMapSvg(analysis: MapAnalysis): { svg: string; width: number; height: number } {
-  const transitions = analysis.transitions.slice(0, 90);
+function buildMapSvg(analysis: MapAnalysis, speed = 1): { svg: string; width: number; height: number } {
+  const transitions = [...analysis.transitions]
+    .sort((a, b) => a.count - b.count)
+    .slice(-90);
   const activities = [...new Set(transitions.flatMap(item => [item.from, item.to]))];
   const volume = new Map(analysis.activities.map(item => [item.name, item.count]));
-  const positions = new Map<string, [number, number]>();
-  const width = Math.max(1850, activities.length * 92);
-  const height = 760;
-  activities.forEach((activity, index) => {
-    const x = 250 + (index % 9) * 175 + Math.floor(index / 9) * 45;
-    const y = 125 + Math.floor(index / 9) * 185 + (index % 2) * 70;
-    positions.set(activity, [x, Math.min(height - 110, y)]);
+  const adjacency = new Map<string, string[]>();
+  transitions.forEach(transition => {
+    if (transition.from === transition.to) return;
+    const targets = adjacency.get(transition.from) || [];
+    targets.push(transition.to);
+    adjacency.set(transition.from, targets);
   });
+
+  const depth = new Map<string, number>();
+  const queue = analysis.starts.map(item => item.name).filter(name => activities.includes(name));
+  if (!queue.length && activities.length) queue.push([...activities].sort((a, b) => (volume.get(b) || 0) - (volume.get(a) || 0))[0]);
+  queue.forEach(name => depth.set(name, 0));
+  for (let cursor = 0; cursor < queue.length; cursor += 1) {
+    const source = queue[cursor];
+    const nextDepth = (depth.get(source) || 0) + 1;
+    (adjacency.get(source) || []).forEach(target => {
+      if (!depth.has(target)) {
+        depth.set(target, nextDepth);
+        queue.push(target);
+      }
+    });
+  }
+  const maxDepth = Math.max(...depth.values(), 1);
+  const layerCount = Math.max(3, Math.min(7, maxDepth + 1));
+  const layers = Array.from({ length: layerCount }, () => [] as string[]);
+  activities.forEach((activity, index) => {
+    const rawDepth = depth.get(activity);
+    const rank = rawDepth === undefined
+      ? 1 + index % Math.max(1, layerCount - 2)
+      : Math.min(layerCount - 1, Math.round(rawDepth / maxDepth * (layerCount - 1)));
+    layers[rank].push(activity);
+  });
+  layers.forEach(layer => layer.sort((a, b) => (volume.get(b) || 0) - (volume.get(a) || 0)));
+
+  const width = 2060;
+  const largestLayer = Math.max(...layers.map(layer => layer.length), 1);
+  const height = Math.max(780, largestLayer * 78 + 180);
+  const centerY = height / 2;
+  const positions = new Map<string, [number, number]>();
+  layers.forEach((layer, rank) => {
+    const spacing = Math.min(82, (height - 180) / Math.max(layer.length - 1, 1));
+    const offsets = layer.map((_, index) => index === 0 ? 0 : Math.ceil(index / 2) * (index % 2 ? -1 : 1));
+    layer.forEach((activity, index) => {
+      const x = 250 + rank * ((width - 500) / Math.max(layerCount - 1, 1));
+      positions.set(activity, [x, centerY + offsets[index] * spacing]);
+    });
+  });
+
   const maxCount = Math.max(...transitions.map(item => item.count), 1);
   const maxWait = Math.max(...transitions.map(item => item.avgHours), 1);
+  const palette = ["#78C878", "#B3D766", "#E2CC45", "#F47B67"];
   const edgeSvg = transitions.map((transition, index) => {
     const [x1, y1] = positions.get(transition.from) || [0, 0];
     const [x2, y2] = positions.get(transition.to) || [0, 0];
     const isLoop = transition.from === transition.to;
-    const cx = (x1 + x2) / 2;
-    const cy = (y1 + y2) / 2 - 110 + (index % 3) * 70;
-    const color = transition.avgHours < 24 ? "#2563EB" : transition.avgHours < 72 ? "#0F766E" : transition.avgHours < 168 ? "#D97706" : "#B42318";
-    const pathId = `edge-${index}`;
-    const duration = 2.4 + (transition.avgHours / maxWait) * 13;
-    const path = isLoop
-      ? `M ${x1 + 16} ${y1} C ${x1 + 88} ${y1 - 80}, ${x1 - 88} ${y1 - 80}, ${x1 - 16} ${y1}`
-      : `M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}`;
-    return `
-      <path id="${pathId}" d="${path}" fill="none" stroke="${isLoop ? "#16A34A" : color}" stroke-width="${1.2 + transition.count / maxCount * 5}" opacity="${isLoop ? ".9" : ".48"}" marker-end="url(#arrow)" />
-      <circle r="${3 + transition.count / maxCount * 3}" fill="${color}" opacity=".92">
-        <animateMotion dur="${duration.toFixed(2)}s" repeatCount="indefinite"><mpath href="#${pathId}" /></animateMotion>
-      </circle>
-      ${isLoop ? `<text x="${x1}" y="${y1 - 67}" text-anchor="middle" font-size="10" font-weight="900" fill="#15803D">${transition.caseCount.toLocaleString()} looping claims</text>` : ""}`;
+    const weight = Math.sqrt(transition.count / maxCount);
+    const strokeWidth = .8 + weight * 7.2 + (isLoop ? .8 : 0);
+    const opacity = .2 + weight * .7;
+    const pathId = `process-edge-${index}`;
+    let path: string;
+    if (isLoop) {
+      const direction = index % 2 ? -1 : 1;
+      const anchorX = x1 + direction * 70;
+      const controlX = x1 + direction * (125 + weight * 55);
+      const loopHeight = 58 + weight * 76;
+      path = `M ${anchorX} ${y1 - 11} C ${controlX} ${y1 - loopHeight}, ${controlX} ${y1 + loopHeight}, ${anchorX} ${y1 + 11}`;
+    } else if (x2 > x1 + 10) {
+      const startX = x1 + 76;
+      const endX = x2 - 76;
+      const bend = Math.max(55, (endX - startX) * .42);
+      path = `M ${startX} ${y1} C ${startX + bend} ${y1}, ${endX - bend} ${y2}, ${endX} ${y2}`;
+    } else if (Math.abs(x2 - x1) <= 10) {
+      const side = index % 2 ? -1 : 1;
+      const edgeX = x1 + side * 76;
+      const controlX = x1 + side * (125 + weight * 55);
+      path = `M ${edgeX} ${y1} C ${controlX} ${y1}, ${controlX} ${y2}, ${edgeX} ${y2}`;
+    } else {
+      const startX = x1 - 76;
+      const endX = x2 + 76;
+      const controlY = Math.max(42, Math.min(y1, y2) - 105 - (index % 5) * 30);
+      path = `M ${startX} ${y1} C ${startX - 90} ${controlY}, ${endX + 90} ${controlY}, ${endX} ${y2}`;
+    }
+    const tokenCount = Math.min(5, Math.max(1, 1 + Math.floor(weight * 4)));
+    const duration = Math.max(2.2, 8.5 - weight * 3.5 + transition.avgHours / maxWait * 3) / speed;
+    const ageBand = Math.min(3, Math.floor(transition.avgHours / maxWait * 4));
+    const tokens = Array.from({ length: tokenCount }, (_, tokenIndex) => {
+      const color = palette[Math.min(3, ageBand + Math.floor(tokenIndex / 3))];
+      const offset = duration / tokenCount * tokenIndex;
+      return `<circle class="map-token" r="${(2.6 + weight * 1.8).toFixed(2)}" fill="${color}" opacity=".95"><animateMotion dur="${duration.toFixed(2)}s" begin="-${offset.toFixed(2)}s" repeatCount="indefinite"><mpath href="#${pathId}" /></animateMotion></circle>`;
+    }).join("");
+    const label = isLoop
+      ? `<text class="map-edge-label" x="${x1}" y="${y1 - 29}" text-anchor="middle">${transition.caseCount.toLocaleString()}</text>`
+      : weight > .46 ? `<text class="map-edge-label" x="${(x1 + x2) / 2}" y="${(y1 + y2) / 2 - 7}" text-anchor="middle">${transition.caseCount.toLocaleString()}</text>` : "";
+    const title = `${escapeHtml(transition.from)} to ${escapeHtml(transition.to)} | ${transition.caseCount.toLocaleString()} claims | ${transition.count.toLocaleString()} movements | ${formatHours(transition.avgHours)}`;
+    return `<g class="process-edge-group ${isLoop ? "self-loop" : ""}"><title>${title}</title><path id="${pathId}" class="process-edge" d="${path}" fill="none" stroke="${isLoop ? "#2F9E44" : "#35AFC0"}" stroke-width="${strokeWidth.toFixed(2)}" opacity="${opacity.toFixed(2)}" marker-end="url(#${isLoop ? "arrow-loop" : "arrow"})"/><path class="process-edge-hit" d="${path}" fill="none" stroke="transparent" stroke-width="${Math.max(14, strokeWidth + 8).toFixed(2)}"/>${tokens}${label}</g>`;
   }).join("");
+
+  const compact = (count: number) => count >= 1000 ? `${(count / 1000).toFixed(count >= 10000 ? 0 : 1)}k` : count.toLocaleString();
   const nodeSvg = activities.map(activity => {
     const [x, y] = positions.get(activity) || [0, 0];
     const count = volume.get(activity) || 0;
-    const label = activity.length > 22 ? `${activity.slice(0, 19)}...` : activity;
-    return `
-      <rect x="${x - 70}" y="${y - 17}" width="140" height="34" rx="17" fill="#FFFFFF" stroke="#72C7CC" stroke-width="1.4"><title>${escapeHtml(activity)} | ${count} events</title></rect>
-      <circle cx="${x - 55}" cy="${y}" r="10" fill="#E6F7F8" stroke="#72C7CC" />
-      <text x="${x - 55}" y="${y + 3.5}" text-anchor="middle" font-size="8" font-weight="900" fill="#0F766E">${count}</text>
-      <text x="${x - 39}" y="${y + 3.5}" font-size="8.5" font-weight="800" fill="#182230">${escapeHtml(label)}</text>`;
+    const label = activity.length > 24 ? `${activity.slice(0, 21)}...` : activity;
+    return `<g class="process-node"><title>${escapeHtml(activity)} | ${count.toLocaleString()} events</title><rect x="${x - 76}" y="${y - 15}" width="152" height="30" rx="15"/><circle cx="${x - 61}" cy="${y}" r="9"/><text class="node-count" x="${x - 61}" y="${y + 3}">${compact(count)}</text><text class="node-label" x="${x - 47}" y="${y + 3}">${escapeHtml(label)}</text></g>`;
   }).join("");
-  const startX = width / 2;
-  const startY = 42;
-  const endX = width / 2;
-  const endY = height - 42;
-  const startSvg = analysis.starts.slice(0, 8).map(item => {
+
+  const startX = 65;
+  const endX = width - 65;
+  const startY = centerY;
+  const endY = centerY;
+  const maxStart = Math.max(...analysis.starts.map(item => item.count), 1);
+  const maxEnd = Math.max(...analysis.ends.map(item => item.count), 1);
+  const startSvg = analysis.starts.slice(0, 8).map((item, index) => {
     const target = positions.get(item.name);
     if (!target) return "";
-    return `<path d="M ${startX} ${startY + 12} Q ${startX} ${Math.max(78, target[1] - 75)} ${target[0]} ${target[1] - 19}" fill="none" stroke="#55C1C7" stroke-width="1.35" marker-end="url(#arrow)" opacity=".72"/>`;
+    const edgeWidth = 1 + Math.sqrt(item.count / maxStart) * 4;
+    const path = `M ${startX + 13} ${startY} C ${startX + 85} ${startY}, ${target[0] - 150} ${target[1]}, ${target[0] - 77} ${target[1]}`;
+    return `<path class="terminal-edge" d="${path}" fill="none" stroke="#35AFC0" stroke-width="${edgeWidth.toFixed(2)}" opacity=".66" marker-end="url(#arrow)"><title>Start to ${escapeHtml(item.name)} | ${item.count.toLocaleString()} claims</title></path>`;
   }).join("");
   const endSvg = analysis.ends.slice(0, 8).map(item => {
     const source = positions.get(item.name);
     if (!source) return "";
-    return `<path d="M ${source[0]} ${source[1] + 19} Q ${endX} ${Math.min(endY - 38, source[1] + 100)} ${endX} ${endY - 12}" fill="none" stroke="#55C1C7" stroke-width="1.35" marker-end="url(#arrow)" opacity=".72"/>`;
+    const edgeWidth = 1 + Math.sqrt(item.count / maxEnd) * 4;
+    const path = `M ${source[0] + 77} ${source[1]} C ${source[0] + 150} ${source[1]}, ${endX - 85} ${endY}, ${endX - 13} ${endY}`;
+    return `<path class="terminal-edge" d="${path}" fill="none" stroke="#35AFC0" stroke-width="${edgeWidth.toFixed(2)}" opacity=".66" marker-end="url(#arrow)"><title>${escapeHtml(item.name)} to End | ${item.count.toLocaleString()} claims</title></path>`;
   }).join("");
-  const terminalSvg = `
-    <circle cx="${startX}" cy="${startY}" r="12" fill="#FFFFFF" stroke="#55C1C7" stroke-width="1.8"><title>Claim start</title></circle>
-    <circle cx="${endX}" cy="${endY}" r="12" fill="#FFFFFF" stroke="#55C1C7" stroke-width="1.8"><title>Claim end</title></circle>
-    <path d="M ${endX - 4} ${endY - 4} L ${endX + 4} ${endY + 4} M ${endX + 4} ${endY - 4} L ${endX - 4} ${endY + 4}" stroke="#0F766E" stroke-width="1.6" stroke-linecap="round"/>`;
+  const terminalSvg = `<g class="map-terminal"><circle cx="${startX}" cy="${startY}" r="12"/><text x="${startX}" y="${startY - 20}">Start</text></g><g class="map-terminal end"><circle cx="${endX}" cy="${endY}" r="12"/><path d="M ${endX - 4} ${endY - 4} L ${endX + 4} ${endY + 4} M ${endX + 4} ${endY - 4} L ${endX - 4} ${endY + 4}"/><text x="${endX}" y="${endY - 20}">End</text></g>`;
+  const defs = `<defs><marker id="arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#35AFC0"/></marker><marker id="arrow-loop" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#2F9E44"/></marker></defs>`;
   return {
-    svg: `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg" style="display:block;background:#FBFDFE"><defs><marker id="arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#5ABFC5"/></marker></defs>${startSvg}${endSvg}${edgeSvg}${nodeSvg}${terminalSvg}</svg>`,
+    svg: `<svg class="milestone-process-map" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Claims milestone process map">${defs}${startSvg}${endSvg}${edgeSvg}${nodeSvg}${terminalSvg}</svg>`,
     width,
     height,
   };
