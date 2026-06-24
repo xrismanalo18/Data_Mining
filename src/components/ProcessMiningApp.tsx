@@ -363,9 +363,8 @@ function MapPanel({ analysis }: { analysis: Analysis }) {
   const filtered = useMemo(() => filterAnalysisBySegment(analysis, segment), [analysis, segment]);
   const [zoom, setZoom] = useState(0.5);
   const [playing, setPlaying] = useState(true);
-  const [speed, setSpeed] = useState(2);
   const mapContentRef = useRef<HTMLDivElement>(null);
-  const map = useMemo(() => buildMapSvg(filtered, speed), [filtered, speed]);
+  const map = useMemo(() => buildMapSvg(filtered), [filtered]);
   const selfLoops = filtered.transitions.filter(item => item.from === item.to).sort((a, b) => b.caseCount - a.caseCount);
   const start = filtered.starts[0];
   const end = filtered.ends[0];
@@ -393,7 +392,6 @@ function MapPanel({ analysis }: { analysis: Analysis }) {
         <div className="control-stat"><span>Queues</span><strong>{filtered.activities.length}</strong></div>
         <div className="map-motion-controls" aria-label="Map animation controls">
           <button type="button" onClick={() => setPlaying(current => !current)} aria-label={playing ? "Pause timeline" : "Play timeline"} title={playing ? "Pause timeline" : "Play timeline"}>{playing ? "Ⅱ" : "▶"}</button>
-          <button type="button" onClick={() => setSpeed(current => current >= 4 ? 1 : current + 1)} title="Change animation speed">{speed}×</button>
         </div>
         <div className="map-zoom-controls" aria-label="Map zoom controls">
           <button type="button" onClick={() => changeZoom(-0.15)} disabled={zoom <= 0.3} aria-label="Zoom out">-</button>
@@ -439,7 +437,7 @@ type MapAnalysis = {
   ends: { name: string; count: number }[];
 };
 
-function buildMapSvg(analysis: MapAnalysis, speed = 1): { svg: string; width: number; height: number } {
+function buildMapSvg(analysis: MapAnalysis): { svg: string; width: number; height: number } {
   const transitions = [...analysis.transitions]
     .sort((a, b) => a.count - b.count)
     .slice(-90);
@@ -530,8 +528,8 @@ function buildMapSvg(analysis: MapAnalysis, speed = 1): { svg: string; width: nu
       const direction = index % 2 ? -1 : 1;
       const anchorX = x1 + direction * 70;
       const controlX = x1 + direction * (102 + weight * 42);
-      const loopHeight = 34 + weight * 48;
-      path = `M ${anchorX} ${y1 - 11} C ${controlX} ${y1 - loopHeight}, ${controlX} ${y1 + loopHeight}, ${anchorX} ${y1 + 11}`;
+      const loopHeight = 44 + weight * 58;
+      path = `M ${anchorX} ${y1 - 18} C ${controlX} ${y1 - loopHeight}, ${controlX} ${y1 + loopHeight}, ${anchorX} ${y1 + 18}`;
     } else if (x2 > x1 + 10) {
       const startX = x1 + 76;
       const endX = x2 - 76;
@@ -554,10 +552,10 @@ function buildMapSvg(analysis: MapAnalysis, speed = 1): { svg: string; width: nu
     const tokens = Array.from({ length: tokenCount }, (_, tokenIndex) => {
       const tokenBand = Math.min(3, ageBand + Math.floor(tokenIndex / 3));
       const color = palette[tokenBand];
-      const ageSpeed = [5, 2, 1.3, .8][tokenBand] * (speed / 2);
+      const ageSpeed = [10, 2, 1.3, .8][tokenBand];
       const duration = baseDuration / ageSpeed;
       const offset = duration / tokenCount * tokenIndex;
-      const radius = (2.3 + weight * 1.3) * (isLoop ? 1.7 : 1);
+      const radius = (2.3 + weight * 1.3) * 2 * (isLoop ? 1.7 : 1);
       return `<circle class="map-token${isLoop ? " self-loop-token" : ""}" r="${radius.toFixed(2)}" fill="${color}" stroke="${isLoop ? "#FFFFFF" : "none"}" stroke-width="${isLoop ? "1.2" : "0"}" opacity=".96"><animateMotion dur="${duration.toFixed(2)}s" begin="-${offset.toFixed(2)}s" repeatCount="indefinite"><mpath href="#${pathId}" /></animateMotion></circle>`;
     }).join("");
     const label = isLoop
