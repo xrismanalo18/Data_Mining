@@ -357,76 +357,317 @@ function renderTab(tab: string, analysis: Analysis) {
   return <Actions />;
 }
 
+type MapSignal = {
+  id: string;
+  type: "queue" | "movement";
+  title: string;
+  subtitle: string;
+  count: number;
+  avgHours?: number;
+  share: number;
+  tone: "normal" | "watch" | "loop" | "critical";
+  description: string;
+  interpretation: string;
+  durationClass?: "fast" | "steady" | "slow" | "late";
+  durationLabel?: string;
+  timeline: { label: string; detail: string; tone?: "fast" | "steady" | "slow" | "late" | "loop" }[];
+};
+
 function MapPanel({ analysis }: { analysis: Analysis }) {
-  const segmentOptions = useMemo(() => getSegmentOptions(analysis), [analysis]);
-  const [segment, setSegment] = useState("All claims");
-  const filtered = useMemo(() => filterAnalysisBySegment(analysis, segment), [analysis, segment]);
-  const [zoom, setZoom] = useState(0.5);
+  const [zoom, setZoom] = useState(0.82);
   const [playing, setPlaying] = useState(true);
-  const mapContentRef = useRef<HTMLDivElement>(null);
-  const map = useMemo(() => buildMapSvg(filtered), [filtered]);
-  const selfLoops = filtered.transitions.filter(item => item.from === item.to).sort((a, b) => b.caseCount - a.caseCount);
-  const start = filtered.starts[0];
-  const end = filtered.ends[0];
-  const zoomPercent = Math.round(zoom * 100);
-  const changeZoom = (amount: number) => {
-    setZoom(current => Math.min(1.8, Math.max(0.3, Number((current + amount).toFixed(2)))));
+  const [selectedSignalRaw, setSelectedSignalRaw] = useState(null);
+  const [selectedModal, setSelectedModal] = useState<"timeline" | "transition" | null>(null);
+  const openTimeline = (signal: MapSignal) => { setSelectedSignalRaw(signal as never); setSelectedModal("timeline"); };
+  const openTransition = (signal: MapSignal) => { setSelectedSignalRaw(signal as never); setSelectedModal("transition"); };
+  const closeTimeline = () => { setSelectedSignalRaw(null as never); setSelectedModal(null); };
+  const map = useMemo(() => ({ caseCount: analysis.caseCount, activities: analysis.activities, transitions: analysis.transitions }), [analysis]);
+  const visibleActivities = useMemo(() => map.activities.slice(0, 22), [map.activities]);
+  const visibleNames = useMemo(() => new Set(visibleActivities.map(item => item.name)), [visibleActivities]);
+  const totalEvents = Math.max(visibleActivities.reduce((sum, item) => sum + item.count, 0), 1);
+  const maxActivityCount = Math.max(...visibleActivities.map(item => item.count), 1);
+  const topTransitions = useMemo(() => map.transitions
+    .filter(item => visibleNames.has(item.from) && visibleNames.has(item.to))
+    .sort((left, right) => right.caseCount - left.caseCount)
+    .slice(0, 48), [map.transitions, visibleNames]);
+  const maxTransitionCount = Math.max(...topTransitions.map(item => item.caseCount), 1);
+  const maxTransitionWait = Math.max(...topTransitions.map(item => item.avgHours), 1);
+  const durationClass = (hours: number) => hours <= 24 ? "fast" : hours <= 72 ? "steady" : hours <= 168 ? "slow" : "late";
+  const durationLabel = (hours: number) => hours <= 24 ? "Fast" : hours <= 72 ? "Steady" : hours <= 168 ? "Slow" : "Late";
+  const motionDuration = (hours: number) => {
+    const normalized = Math.min(1, Math.max(0, hours / Math.max(maxTransitionWait, 1)));
+    return (2.8 + normalized * 9.2).toFixed(1);
   };
-  useEffect(() => {
-    const svg = mapContentRef.current?.querySelector("svg") as (SVGSVGElement & { pauseAnimations?: () => void; unpauseAnimations?: () => void }) | null;
-    if (playing) svg?.unpauseAnimations?.();
-    else svg?.pauseAnimations?.();
-  }, [map.svg, playing]);
-  return (
-    <section className="card process-map-card">
-      <div className="analysis-controlbar">
-        <div><span className="control-label">Process view</span><strong>{segment}</strong></div>
-        <label className="inline-select">
-          <span>Claim segment</span>
-          <select value={segment} onChange={event => setSegment(event.target.value)}>
-            {segmentOptions.map(option => <option key={option} value={option}>{option}</option>)}
-          </select>
-        </label>
-        <div className="control-stat"><span>Claims</span><strong>{filtered.caseCount.toLocaleString()}</strong></div>
-        <div className="control-stat"><span>Self-loop claims</span><strong>{selfLoops.reduce((sum, item) => sum + item.caseCount, 0).toLocaleString()}</strong></div>
-        <div className="control-stat"><span>Queues</span><strong>{filtered.activities.length}</strong></div>
-        <div className="map-motion-controls" aria-label="Map animation controls">
-          <button type="button" onClick={() => setPlaying(current => !current)} aria-label={playing ? "Pause timeline" : "Play timeline"} title={playing ? "Pause timeline" : "Play timeline"}>{playing ? "Ⅱ" : "▶"}</button>
-        </div>
-        <div className="map-zoom-controls" aria-label="Map zoom controls">
-          <button type="button" onClick={() => changeZoom(-0.15)} disabled={zoom <= 0.3} aria-label="Zoom out">-</button>
-          <span>{zoomPercent}%</span>
-          <button type="button" onClick={() => changeZoom(0.15)} disabled={zoom >= 1.8} aria-label="Zoom in">+</button>
-          <button type="button" onClick={() => setZoom(0.5)}>Reset</button>
+  const changeZoom = (amount: number) => setZoom(current => Number(Math.min(1.55, Math.max(0.45, current + amount)).toFixed(2)));
+  const compactCount = (count: number) => count >= 1000 ? `${(count / 1000).toFixed(count >= 10000 ? 0 : 1)}K` : count.toLocaleString();
+
+  const width = 1540;
+  const height = 760;
+  const startX = 36;
+  const endX = 1498;
+  const baseline = 402;
+  const nodeByName = new Map(visibleActivities.map((activity, index) => {
+    const usableWidth = 1280;
+    const x = visibleActivities.length <= 1 ? width / 2 : 132 + (usableWidth / Math.max(1, visibleActivities.length - 1)) * index;
+    const yOffsets = [0, -42, 42, -88, 88, -132, 132];
+    const y = baseline + yOffsets[index % yOffsets.length];
+    return [activity.name, { ...activity, index, x, y }];
+  }));
+
+  const makeQueueSignal = (activity: { name: string; count: number; x: number; y: number }): MapSignal => {
+    const share = activity.count / totalEvents * 100;
+    const inbound = topTransitions.filter(item => item.to === activity.name).reduce((sum, item) => sum + item.caseCount, 0);
+    const outbound = topTransitions.filter(item => item.from === activity.name).reduce((sum, item) => sum + item.caseCount, 0);
+    const loopCount = topTransitions.filter(item => item.from === activity.name && item.to === activity.name).reduce((sum, item) => sum + item.caseCount, 0);
+    const relatedTransitions = topTransitions.filter(item => item.from === activity.name || item.to === activity.name);
+    const avgWait = relatedTransitions.length ? relatedTransitions.reduce((sum, item) => sum + item.avgHours, 0) / relatedTransitions.length : 0;
+    const tone = loopCount > 0 ? "loop" : avgWait > 72 ? "critical" : avgWait > 24 ? "watch" : "normal";
+    return {
+      id: `queue:${activity.name}`,
+      type: "queue",
+      title: activity.name,
+      subtitle: `${activity.count.toLocaleString()} events | ${share.toFixed(1)}% of visible activity`,
+      count: activity.count,
+      avgHours: avgWait || undefined,
+      share,
+      tone,
+      description: `This queue represents work items recorded at ${activity.name}. The pill size and label follow the reference map style: compact queue node, count above the node, and flow lines routed around it.`,
+      durationClass: avgWait ? durationClass(avgWait) : "fast",
+      durationLabel: avgWait ? durationLabel(avgWait) : "Fast",
+      timeline: [
+        { label: "Inbound", detail: `${inbound.toLocaleString()} visible claims arrive here`, tone: inbound > outbound * 1.25 ? "slow" : "fast" },
+        { label: "Queue age", detail: avgWait ? `${formatHours(avgWait)} average connected wait` : "No connected wait detected", tone: avgWait ? durationClass(avgWait) : "fast" },
+        { label: "Loop check", detail: loopCount ? `${loopCount.toLocaleString()} claims return through this queue` : "No self-loop in the visible paths", tone: loopCount ? "loop" : "fast" },
+        { label: "Outbound", detail: `${outbound.toLocaleString()} visible claims leave this queue`, tone: outbound < inbound * .75 ? "slow" : "fast" },
+      ],
+      interpretation: loopCount > 0
+        ? `${activity.name} participates in rework. ${loopCount.toLocaleString()} visible claims loop back through this queue, so spacing around the loop should be watched for avoidable cycling.`
+        : inbound > outbound * 1.25
+          ? `${activity.name} receives more visible flow than it releases. That pattern can indicate local queue buildup or downstream waiting.`
+          : avgWait > 24
+            ? `${activity.name} has elevated wait exposure. Review owners, handoff rules, and exception criteria before this step.`
+            : `${activity.name} is moving proportionally with the surrounding flow. It does not stand out as the primary delay point in the current segment.`,
+    };
+  };
+
+  const makeMovementSignal = (transition: Analysis["transitions"][number], isLoop: boolean): MapSignal => {
+    const share = transition.caseCount / Math.max(map.caseCount, 1) * 100;
+    const durationTone = durationClass(transition.avgHours);
+    const tone = isLoop ? "loop" : durationTone === "late" ? "critical" : durationTone === "slow" ? "watch" : "normal";
+    return {
+      id: `move:${transition.from}->${transition.to}`,
+      type: "movement",
+      title: `${transition.from} -> ${transition.to}`,
+      subtitle: `${transition.caseCount.toLocaleString()} claims | ${share.toFixed(1)}% of cases`,
+      count: transition.caseCount,
+      avgHours: transition.avgHours,
+      share,
+      tone,
+      durationClass: durationTone,
+      durationLabel: durationLabel(transition.avgHours),
+      timeline: [
+        { label: "Started", detail: transition.from, tone: "fast" },
+        { label: "Processing age", detail: `${formatHours(transition.avgHours)} average time on this handoff`, tone: durationTone },
+        { label: "Completed", detail: transition.to, tone: durationTone },
+        { label: "Volume", detail: `${transition.caseCount.toLocaleString()} claims use this path`, tone: transition.caseCount > maxTransitionCount * .4 ? "steady" : "fast" },
+      ],
+      description: "The moving button is a claim token traveling along this connector. Its color represents how long the claim took to process: green is fast, yellow is steady, orange is slow, and red is late.",
+      interpretation: isLoop
+        ? `This is a loopback path. Claims return from ${transition.from} to ${transition.to}, which usually means rework, missing information, reassignment, or policy exception handling.`
+        : transition.avgHours > 72
+          ? `This handoff is slow at ${formatHours(transition.avgHours)} on average. Treat it as a high-risk delay path and inspect ownership, queue capacity, and approval dependency.`
+          : transition.avgHours > 24
+            ? "This handoff has moderate waiting time. It may not be the largest bottleneck, but reducing queue time here can improve end-to-end flow."
+            : "This handoff appears to move normally for the selected segment. Its count is useful for volume context, but the wait time is not the main concern.",
+    };
+  };
+
+  const activeSignal = selectedSignalRaw as MapSignal | null;
+
+  const transitionPath = (from: { x: number; y: number; index: number }, to: { x: number; y: number; index: number }, order: number, isLoop: boolean) => {
+    if (isLoop && from.index === to.index) {
+      const spread = 34 + (order % 5) * 13;
+      return `M ${from.x - 34} ${from.y - 13} C ${from.x - 92} ${from.y - spread}, ${from.x + 92} ${from.y - spread}, ${from.x + 34} ${from.y - 13}`;
+    }
+    const direction = to.index >= from.index ? 1 : -1;
+    const loopLane = direction < 0 ? 86 + (order % 8) * 23 : 28 + (order % 5) * 10;
+    const vertical = direction < 0 ? loopLane * (order % 2 === 0 ? -1 : 1) : (to.y - from.y) * 0.35 - loopLane;
+    const c1x = from.x + Math.max(48, Math.abs(to.x - from.x) * 0.38) * direction;
+    const c2x = to.x - Math.max(48, Math.abs(to.x - from.x) * 0.38) * direction;
+    return `M ${from.x + 66 * direction} ${from.y} C ${c1x} ${from.y + vertical}, ${c2x} ${to.y + vertical}, ${to.x - 66 * direction} ${to.y}`;
+  };
+
+  return <section className="card process-map-card timelinepi-map-card">
+    <PanelHeader kicker="Process map" title="Timeline-style milestone flow" detail="Moving claim tokens can be clicked for queue descriptions and operational interpretation." />
+    <div className="map-toolbar">
+      <div className="map-motion-controls" aria-label="Map motion controls">
+        <button className="icon-button" type="button" onClick={() => setPlaying(value => !value)} title={playing ? "Pause motion" : "Play motion"}>{playing ? "Pause" : "Play"}</button>
+        <button type="button" onClick={() => changeZoom(-0.12)} disabled={zoom <= 0.45}>-</button>
+        <span>{Math.round(zoom * 100)}%</span>
+        <button type="button" onClick={() => changeZoom(0.12)} disabled={zoom >= 1.55}>+</button>
+        <button type="button" onClick={() => setZoom(0.72)}>Fit</button>
+      </div>
+    </div>
+
+    <div className="timelinepi-map-grid timelinepi-map-grid-full">
+      <div className="timelinepi-map-shell">
+        <div className="map-scaler" style={{ width: width * zoom, height: height * zoom }}>
+          <svg className={`milestone-process-map timelinepi-process-map ${playing ? "is-playing" : "is-paused"}`} viewBox={`0 0 ${width} ${height}`} style={{ transform: `scale(${zoom})`, transformOrigin: "top left" }} role="img" aria-label="Timeline-style process map">
+            <defs>
+              <marker id="timelinepi-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" /></marker>
+              <marker id="timelinepi-loop-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" /></marker>
+              <filter id="timelinepi-token-shadow" x="-40%" y="-40%" width="180%" height="180%"><feDropShadow dx="0" dy="1" stdDeviation="1.4" floodOpacity="0.24" /></filter>
+            </defs>
+
+            <g className="timelinepi-terminal start">
+              <circle cx={startX} cy={baseline} r="11" />
+              <text x={startX} y={baseline - 20}>Start</text>
+            </g>
+            <g className="timelinepi-terminal end">
+              <circle cx={endX} cy={baseline + 48} r="11" />
+              <path d={`M ${endX - 4} ${baseline + 44} L ${endX + 4} ${baseline + 52} M ${endX + 4} ${baseline + 44} L ${endX - 4} ${baseline + 52}`} />
+              <text x={endX} y={baseline + 80}>End</text>
+            </g>
+
+            {visibleActivities.slice(0, 6).map((item, index) => {
+              const node = nodeByName.get(item.name)!;
+              const y = baseline - 60 - index * 22;
+              const path = `M ${startX + 14} ${baseline} C ${node.x * 0.35} ${y}, ${node.x * 0.72} ${y}, ${node.x - 76} ${node.y}`;
+              return <path key={`start-${item.name}`} className="timelinepi-edge terminal-edge" d={path} markerEnd="url(#timelinepi-arrow)" />;
+            })}
+
+            {visibleActivities.slice(-6).map((item, index) => {
+              const node = nodeByName.get(item.name)!;
+              const y = baseline + 96 + index * 18;
+              const path = `M ${node.x + 76} ${node.y} C ${node.x + 180} ${y}, ${endX - 150} ${y}, ${endX - 14} ${baseline + 48}`;
+              return <path key={`end-${item.name}`} className="timelinepi-edge terminal-edge" d={path} markerEnd="url(#timelinepi-arrow)" />;
+            })}
+
+            {topTransitions.map((transition, index) => {
+              const from = nodeByName.get(transition.from);
+              const to = nodeByName.get(transition.to);
+              if (!from || !to) return null;
+              const isLoop = transition.from === transition.to || to.index < from.index;
+              const id = `timelinepi-path-${index}`;
+              const path = transitionPath(from, to, index, isLoop);
+              const strokeWidth = 0.8 + transition.caseCount / maxTransitionCount * 3.2;
+              const signal = makeMovementSignal(transition, isLoop);
+              return <g key={id} className={`timelinepi-edge-group ${isLoop ? "is-loop" : ""} ${activeSignal?.id === signal.id ? "is-selected" : ""}`}>
+                <path id={id} className="timelinepi-edge" d={path} strokeWidth={strokeWidth} markerEnd={`url(#${isLoop ? "timelinepi-loop-arrow" : "timelinepi-arrow"})`} />
+                <path className="timelinepi-edge-hit" d={path} onClick={() => openTransition(signal)} />
+                <text className="timelinepi-edge-count"><textPath href={`#${id}`} startOffset="50%">{transition.caseCount.toLocaleString()}</textPath></text>
+                <circle className={`timelinepi-token ${signal.tone} speed-${signal.durationClass}`} r={isLoop ? 5.2 : 4.5} filter="url(#timelinepi-token-shadow)" onClick={event => { event.stopPropagation(); openTimeline(signal); }}>
+                  <animateMotion dur={`${motionDuration(transition.avgHours)}s`} repeatCount="indefinite" rotate="auto" begin={`${(index % 10) * 0.28}s`}>
+                    <mpath href={`#${id}`} />
+                  </animateMotion>
+                  <title>{signal.title}</title>
+                </circle>
+                <circle className="timelinepi-token-hit" r="14" onClick={event => { event.stopPropagation(); openTimeline(signal); }}>
+                  <animateMotion dur={`${motionDuration(transition.avgHours)}s`} repeatCount="indefinite" rotate="auto" begin={`${(index % 10) * 0.28}s`}>
+                    <mpath href={`#${id}`} />
+                  </animateMotion>
+                </circle>
+              </g>;
+            })}
+
+            {visibleActivities.map(item => {
+              const node = nodeByName.get(item.name)!;
+              const signal = makeQueueSignal(node);
+              const nodeWidth = Math.max(108, Math.min(172, 92 + item.count / maxActivityCount * 52));
+              const label = item.name.length > 20 ? `${item.name.slice(0, 18)}...` : item.name;
+              return <g key={item.name} className={`timelinepi-node ${signal.tone} ${activeSignal?.id === signal.id ? "is-selected" : ""}`}>
+                <text className="timelinepi-node-count" x={node.x + nodeWidth / 2 - 12} y={node.y - 15}>{compactCount(item.count)}</text>
+                <rect x={node.x - nodeWidth / 2} y={node.y - 11} width={nodeWidth} height="22" rx="11" />
+                <circle cx={node.x - nodeWidth / 2 + 12} cy={node.y} r="5" />
+                <text className="timelinepi-node-label" x={node.x - nodeWidth / 2 + 23} y={node.y + 3}>{label}</text>
+                <title>{signal.title}</title>
+              </g>;
+            })}
+          </svg>
         </div>
       </div>
-      <div className="map-signal-strip">
-        <span className="start-signal"><i /> Start: <strong>{start?.name || "No start detected"}</strong> {start ? `(${start.count.toLocaleString()})` : ""}</span>
-        <span className="loop-signal"><i /> Loops: <strong>{selfLoops[0]?.from || "None"}</strong> {selfLoops[0] ? `(${selfLoops[0].caseCount.toLocaleString()} claims)` : ""}</span>
-        <span className="end-signal"><i /> End: <strong>{end?.name || "No end detected"}</strong> {end ? `(${end.count.toLocaleString()})` : ""}</span>
-        <span className="map-age-key"><small>New</small><b /><small>Old</small></span>
-      </div>
-      <div className="map-wrap">
-        <div className="map-canvas">
-          <div className="map-scaler" style={{ width: map.width * zoom, height: map.height * zoom }}>
-            <div ref={mapContentRef} className="map-content" dangerouslySetInnerHTML={{ __html: map.svg }} />
+
+
+    </div>
+
+    {activeSignal && selectedModal === "timeline" && <div className="timeline-modal-backdrop" role="dialog" aria-modal="true" aria-label="Timeline details">
+      <div className="timeline-modal-window">
+        <button className="timeline-modal-close" type="button" onClick={closeTimeline} aria-label="Close timeline">x</button>
+        <header className="timeline-modal-header">
+          <h2>Timeline #{Math.abs(activeSignal.id.split("").reduce((sum, char) => sum + char.charCodeAt(0), 0) * 971).toString()}</h2>
+          <button type="button">Export</button>
+          <button type="button">Open in new window</button>
+        </header>
+        <div className="timeline-modal-body">
+          <button className="timeline-modal-arrow left" type="button" aria-label="Previous timeline">‹</button>
+          <div className="timeline-event-canvas">
+            <div className="timeline-event-line" />
+            {activeSignal.timeline.map((item, index) => {
+              const y = 42 + index * 64 + (index > 2 ? 210 : 0);
+              const isGap = index === 2 && activeSignal.avgHours;
+              return <div className="timeline-event-row" style={{ top: y }} key={`${activeSignal.id}-modal-${index}`}>
+                {isGap && <div className={`timeline-gap-label ${activeSignal.durationClass || "fast"}`}>{formatHours(activeSignal.avgHours || 0)}</div>}
+                <div className="timeline-event-time">{index === 0 ? "Start" : index === activeSignal.timeline.length - 1 ? "Complete" : `Step ${index + 1}`}</div>
+                <span className={`timeline-event-index ${item.tone || activeSignal.durationClass || "fast"}`}>{index + 1}</span>
+                <div className="timeline-event-text"><b>{item.label}</b><span>{item.detail}</span></div>
+              </div>;
+            })}
           </div>
+          <aside className="timeline-modal-side">
+            <section>
+              <h3>Tags</h3>
+              <select><option>Add new tag</option></select>
+            </section>
+            <section>
+              <h3>View</h3>
+              <label><input type="checkbox" /> Show subprocesses</label>
+              <label><input type="checkbox" defaultChecked /> Show attributes</label>
+              <label><input type="checkbox" defaultChecked /> Change only</label>
+              <label><input type="checkbox" defaultChecked /> Show duration</label>
+            </section>
+            <section>
+              <h3>Statistics</h3>
+              <dl>
+                <div><dt>Duration</dt><dd>{activeSignal.avgHours ? formatHours(activeSignal.avgHours) : "0 hours"}</dd></div>
+                <div><dt>Number of events</dt><dd>{activeSignal.count.toLocaleString()}</dd></div>
+                <div><dt>Number of unique events</dt><dd>{activeSignal.timeline.length}</dd></div>
+                <div><dt>Max gap</dt><dd>{activeSignal.avgHours ? formatHours(activeSignal.avgHours) : "0 hours"}</dd></div>
+                <div><dt>Average gap</dt><dd>{activeSignal.avgHours ? formatHours((activeSignal.avgHours || 0) / Math.max(activeSignal.timeline.length - 1, 1)) : "0 hours"}</dd></div>
+                <div><dt>Cost</dt><dd>0 $</dd></div>
+              </dl>
+            </section>
+          </aside>
+          <button className="timeline-modal-arrow right" type="button" aria-label="Next timeline">›</button>
         </div>
       </div>
-      {selfLoops.length > 0 && (
-        <div className="loop-ledger" aria-label="Actual self-looping claims">
-          {selfLoops.slice(0, 8).map(loop => (
-            <div key={loop.from}>
-              <span className="loop-glyph">↻</span>
-              <strong>{loop.from}</strong>
-              <b>{loop.caseCount.toLocaleString()} claims</b>
-              <small>{loop.count.toLocaleString()} repeats</small>
-            </div>
-          ))}
+    </div>}
+
+    {activeSignal && selectedModal === "transition" && <div className="transition-modal-backdrop" role="dialog" aria-modal="true" aria-label="Process transition">
+      <div className="transition-modal-window">
+        <button className="transition-modal-close" type="button" onClick={closeTimeline} aria-label="Close transition">x</button>
+        <header><h2>Process transition</h2></header>
+        <div className="transition-modal-content">
+          <h3>Duration of selected transition</h3>
+          <div className="transition-range-row">
+            <label><span>MIN</span><input value="0" readOnly /><small>secs</small></label>
+            <div className="transition-average"><span>Average</span><b>{activeSignal.avgHours ? formatHours(activeSignal.avgHours) : "0 hours"}</b><small>min - max</small></div>
+            <label><span>MAX</span><input value={String(Math.round((activeSignal.avgHours || 0) * 3600 * 2))} readOnly /><small>secs</small></label>
+          </div>
+          <div className="transition-distribution">
+            <div className={`transition-spike ${activeSignal.durationClass || "fast"}`} />
+            <div className="transition-line" />
+            <span className="transition-min-pill">0</span>
+            <span className="transition-max-pill">{activeSignal.avgHours ? formatHours(activeSignal.avgHours * 2) : "0 hours"}</span>
+            <span className="transition-handle left" />
+            <span className="transition-handle right" />
+          </div>
+          <h3>Breakdown by dimensions</h3>
+          <div className="transition-breakdown-card"><b>{activeSignal.title.split(" -> ")[1] || activeSignal.title}</b><span>{activeSignal.share.toFixed(0)}% ({activeSignal.count.toLocaleString()})</span></div>
         </div>
-      )}
-    </section>
-  );
+        <footer><button type="button" onClick={closeTimeline}>Cancel</button><button type="button" onClick={closeTimeline}>Apply</button></footer>
+      </div>
+    </div>}
+  </section>;
 }
 
 type MapAnalysis = {
