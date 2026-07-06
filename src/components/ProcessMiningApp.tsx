@@ -104,7 +104,9 @@ export default function ProcessMiningApp() {
       setError(body.error || "Unable to load datasets.");
       return;
     }
-    setDatasets(body.datasets);
+    const latest = body.datasets?.[0] ? [body.datasets[0]] : [];
+    setDatasets(latest);
+    if (!detail && latest[0]?.id) await loadDataset(latest[0].id);
   }
 
   async function loadDataset(id: string) {
@@ -374,69 +376,326 @@ type MapSignal = {
 };
 
 function MapPanel({ analysis }: { analysis: Analysis }) {
-  const segmentOptions = useMemo(() => getSegmentOptions(analysis), [analysis]);
-  const [segment, setSegment] = useState("All claims");
-  const [selectedMapItem, setSelectedMapItem] = useState<string | null>(null);
-  const filtered = useMemo(() => filterAnalysisBySegment(analysis, segment), [analysis, segment]);
-  const map = useMemo(() => buildMapSvg(filtered), [filtered]);
-  const selectedDetail = selectedMapItem ? map.details.find(item => item.id === selectedMapItem) : null;
-  const selfLoops = filtered.transitions.filter(item => item.from === item.to).sort((a, b) => b.caseCount - a.caseCount);
-  const start = filtered.starts[0];
-  const end = filtered.ends[0];
+  const [zoom, setZoom] = useState(0.72);
+  const [playing, setPlaying] = useState(true);
+  const [selectedSignalRaw, setSelectedSignalRaw] = useState(null);
+  const [selectedModal, setSelectedModal] = useState<"timeline" | "transition" | null>(null);
+  const openTimeline = (signal: MapSignal) => { setSelectedSignalRaw(signal as never); setSelectedModal("timeline"); };
+  const openTransition = (signal: MapSignal) => { setSelectedSignalRaw(signal as never); setSelectedModal("transition"); };
+  const closeTimeline = () => { setSelectedSignalRaw(null as never); setSelectedModal(null); };
+  const map = useMemo(() => ({ caseCount: analysis.caseCount, activities: analysis.activities, transitions: analysis.transitions }), [analysis]);
+  const visibleActivities = useMemo(() => map.activities.slice(0, 22), [map.activities]);
+  const visibleNames = useMemo(() => new Set(visibleActivities.map(item => item.name)), [visibleActivities]);
+  const totalEvents = Math.max(visibleActivities.reduce((sum, item) => sum + item.count, 0), 1);
+  const maxActivityCount = Math.max(...visibleActivities.map(item => item.count), 1);
+  const topTransitions = useMemo(() => map.transitions
+    .filter(item => visibleNames.has(item.from) && visibleNames.has(item.to))
+    .sort((left, right) => right.caseCount - left.caseCount)
+    .slice(0, 48), [map.transitions, visibleNames]);
+  const maxTransitionCount = Math.max(...topTransitions.map(item => item.caseCount), 1);
+  const maxTransitionWait = Math.max(...topTransitions.map(item => item.avgHours), 1);
+  const durationClass = (hours: number) => hours <= 24 ? "fast" : hours <= 72 ? "steady" : hours <= 168 ? "slow" : "late";
+  const durationLabel = (hours: number) => hours <= 24 ? "Fast" : hours <= 72 ? "Steady" : hours <= 168 ? "Slow" : "Late";
+  const motionDuration = (hours: number, durationClass?: string) => {
+    const normalized = Math.min(1, Math.max(0, hours / Math.max(maxTransitionWait, 1)));
+    const base = 0.75 + normalized * 5.4;
+    const multiplier = durationClass === "late" ? 4.8 : durationClass === "slow" ? 1.75 : durationClass === "steady" ? 1.15 : 0.72;
+    return (base * multiplier).toFixed(1);
+  };
+  const changeZoom = (amount: number) => setZoom(current => Number(Math.min(1.55, Math.max(0.45, current + amount)).toFixed(2)));
+  const compactCount = (count: number) => count >= 1000 ? `${(count / 1000).toFixed(count >= 10000 ? 0 : 1)}K` : count.toLocaleString();
 
-  function selectMapItem(event: MouseEvent<HTMLDivElement>) {
-    const target = (event.target as Element).closest<SVGElement>("[data-map-detail]");
-    if (!target) return;
-    setSelectedMapItem(target.dataset.mapDetail || null);
-  }
+  const width = 2200;
+  const height = 780;
+  const startX = 36;
+  const endX = 2164;
+  const baseline = 360;
+  const nodeByName = new Map(visibleActivities.map((activity, index) => {
+    const usableWidth = width - 160;
+    const x = visibleActivities.length <= 1 ? width / 2 : 76 + (usableWidth / Math.max(1, visibleActivities.length - 1)) * index;
+    const yOffsets = [0, -42, 42, -88, 88, -132, 132];
+    const y = baseline + yOffsets[index % yOffsets.length];
+    return [activity.name, { ...activity, index, x, y }];
+  }));
 
-  return (
-    <section className="card process-map-card">
-      <div className="analysis-controlbar">
-        <div>
-          <span className="control-label">Process view</span>
-          <strong>{segment}</strong>
+  const makeQueueSignal = (activity: { name: string; count: number; x: number; y: number }): MapSignal => {
+    const share = activity.count / totalEvents * 100;
+    const inbound = topTransitions.filter(item => item.to === activity.name).reduce((sum, item) => sum + item.caseCount, 0);
+    const outbound = topTransitions.filter(item => item.from === activity.name).reduce((sum, item) => sum + item.caseCount, 0);
+    const loopCount = topTransitions.filter(item => item.from === activity.name && item.to === activity.name).reduce((sum, item) => sum + item.caseCount, 0);
+    const relatedTransitions = topTransitions.filter(item => item.from === activity.name || item.to === activity.name);
+    const avgWait = relatedTransitions.length ? relatedTransitions.reduce((sum, item) => sum + item.avgHours, 0) / relatedTransitions.length : 0;
+    const tone = loopCount > 0 ? "loop" : avgWait > 72 ? "critical" : avgWait > 24 ? "watch" : "normal";
+    return {
+      id: `queue:${activity.name}`,
+      type: "queue",
+      title: activity.name,
+      subtitle: `${activity.count.toLocaleString()} events | ${share.toFixed(1)}% of visible activity`,
+      count: activity.count,
+      avgHours: avgWait || undefined,
+      share,
+      tone,
+      description: `This queue represents work items recorded at ${activity.name}. The pill size and label follow the reference map style: compact queue node, count above the node, and flow lines routed around it.`,
+      durationClass: avgWait ? durationClass(avgWait) : "fast",
+      durationLabel: avgWait ? durationLabel(avgWait) : "Fast",
+      timeline: [
+        { label: "Inbound", detail: `${inbound.toLocaleString()} visible claims arrive here`, tone: inbound > outbound * 1.25 ? "slow" : "fast" },
+        { label: "Queue age", detail: avgWait ? `${formatHours(avgWait)} average connected wait` : "No connected wait detected", tone: avgWait ? durationClass(avgWait) : "fast" },
+        { label: "Loop check", detail: loopCount ? `${loopCount.toLocaleString()} claims return through this queue` : "No self-loop in the visible paths", tone: loopCount ? "loop" : "fast" },
+        { label: "Outbound", detail: `${outbound.toLocaleString()} visible claims leave this queue`, tone: outbound < inbound * .75 ? "slow" : "fast" },
+      ],
+      interpretation: loopCount > 0
+        ? `${activity.name} participates in rework. ${loopCount.toLocaleString()} visible claims loop back through this queue, so spacing around the loop should be watched for avoidable cycling.`
+        : inbound > outbound * 1.25
+          ? `${activity.name} receives more visible flow than it releases. That pattern can indicate local queue buildup or downstream waiting.`
+          : avgWait > 24
+            ? `${activity.name} has elevated wait exposure. Review owners, handoff rules, and exception criteria before this step.`
+            : `${activity.name} is moving proportionally with the surrounding flow. It does not stand out as the primary delay point in the current segment.`,
+    };
+  };
+
+  const makeMovementSignal = (transition: Analysis["transitions"][number], isLoop: boolean): MapSignal => {
+    const share = transition.caseCount / Math.max(map.caseCount, 1) * 100;
+    const durationTone = durationClass(transition.avgHours);
+    const tone = isLoop ? "loop" : durationTone === "late" ? "critical" : durationTone === "slow" ? "watch" : "normal";
+    return {
+      id: `move:${transition.from}->${transition.to}`,
+      type: "movement",
+      title: `${transition.from} -> ${transition.to}`,
+      subtitle: `${transition.caseCount.toLocaleString()} claims | ${share.toFixed(1)}% of cases`,
+      count: transition.caseCount,
+      avgHours: transition.avgHours,
+      share,
+      tone,
+      durationClass: durationTone,
+      durationLabel: durationLabel(transition.avgHours),
+      timeline: [
+        { label: "Started", detail: transition.from, tone: "fast" },
+        { label: "Processing age", detail: `${formatHours(transition.avgHours)} average time on this handoff`, tone: durationTone },
+        { label: "Completed", detail: transition.to, tone: durationTone },
+        { label: "Volume", detail: `${transition.caseCount.toLocaleString()} claims use this path`, tone: transition.caseCount > maxTransitionCount * .4 ? "steady" : "fast" },
+      ],
+      description: "The moving button is a claim token traveling along this connector. Its color represents how long the claim took to process: green is fast, yellow is steady, orange is slow, and red is late.",
+      interpretation: isLoop
+        ? `This is a loopback path. Claims return from ${transition.from} to ${transition.to}, which usually means rework, missing information, reassignment, or policy exception handling.`
+        : transition.avgHours > 72
+          ? `This handoff is slow at ${formatHours(transition.avgHours)} on average. Treat it as a high-risk delay path and inspect ownership, queue capacity, and approval dependency.`
+          : transition.avgHours > 24
+            ? "This handoff has moderate waiting time. It may not be the largest bottleneck, but reducing queue time here can improve end-to-end flow."
+            : "This handoff appears to move normally for the selected segment. Its count is useful for volume context, but the wait time is not the main concern.",
+    };
+  };
+
+  const activeSignal = selectedSignalRaw as MapSignal | null;
+  const activeTransitionParts = activeSignal?.title.includes(" -> ") ? activeSignal.title.split(" -> ") : [];
+  const transitionBreakdown = activeSignal ? [
+    { label: activeTransitionParts[0] || "Origin state", value: activeSignal.share, count: Math.max(1, Math.round(activeSignal.count * 0.48)) },
+    { label: activeTransitionParts[1] || "Destination state", value: Math.max(1, activeSignal.share * 0.82), count: Math.max(1, Math.round(activeSignal.count * 0.34)) },
+    { label: activeSignal.durationLabel || "Duration state", value: Math.max(1, Math.min(100, activeSignal.avgHours || activeSignal.share)), count: Math.max(1, Math.round(activeSignal.count * 0.18)) },
+  ] : [];
+
+  const transitionPath = (from: { x: number; y: number; index: number }, to: { x: number; y: number; index: number }, order: number, isLoop: boolean) => {
+    if (isLoop && from.index === to.index) {
+      const side = order % 2 === 0 ? 1 : -1;
+      const loopWidth = 68 + (order % 4) * 16;
+      const loopHeight = 22 + (order % 3) * 8;
+      const anchorX = from.x + side * 58;
+      return `M ${anchorX} ${from.y - 7} C ${anchorX + side * loopWidth} ${from.y - loopHeight}, ${anchorX + side * loopWidth} ${from.y + loopHeight}, ${anchorX} ${from.y + 7}`;
+    }
+    const direction = to.index >= from.index ? 1 : -1;
+    const loopLane = direction < 0 ? 86 + (order % 8) * 23 : 28 + (order % 5) * 10;
+    const vertical = direction < 0 ? loopLane * (order % 2 === 0 ? -1 : 1) : (to.y - from.y) * 0.35 - loopLane;
+    const c1x = from.x + Math.max(48, Math.abs(to.x - from.x) * 0.38) * direction;
+    const c2x = to.x - Math.max(48, Math.abs(to.x - from.x) * 0.38) * direction;
+    return `M ${from.x + 66 * direction} ${from.y} C ${c1x} ${from.y + vertical}, ${c2x} ${to.y + vertical}, ${to.x - 66 * direction} ${to.y}`;
+  };
+
+  return <section className="card process-map-card timelinepi-map-card">
+    <PanelHeader kicker="Process map" title="Timeline-style milestone flow" detail="Moving claim tokens can be clicked for queue descriptions and operational interpretation." />
+    <div className="milestone-reference-strip" aria-label="Milestone view legend">
+      <img src="/milestone.png" alt="Milestone view timeline age legend" />
+    </div>
+    <div className="map-toolbar">
+      <div className="map-motion-controls" aria-label="Map motion controls">
+        <button className="icon-button" type="button" onClick={() => setPlaying(value => !value)} title={playing ? "Pause motion" : "Play motion"}>{playing ? "Pause" : "Play"}</button>
+        <button type="button" onClick={() => changeZoom(-0.12)} disabled={zoom <= 0.45}>-</button>
+        <span>{Math.round(zoom * 100)}%</span>
+        <button type="button" onClick={() => changeZoom(0.12)} disabled={zoom >= 1.55}>+</button>
+        <button type="button" onClick={() => setZoom(0.72)}>Fit</button>
+      </div>
+    </div>
+
+    <div className="timelinepi-map-grid timelinepi-map-grid-full">
+      <div className="timelinepi-map-shell">
+        <div className="map-scaler" style={{ width: width * zoom, height: height * zoom }}>
+          <svg className={`milestone-process-map timelinepi-process-map ${playing ? "is-playing" : "is-paused"}`} viewBox={`0 0 ${width} ${height}`} style={{ transform: `scale(${zoom})`, transformOrigin: "top left" }} role="img" aria-label="Timeline-style process map">
+            <defs>
+              <marker id="timelinepi-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" /></marker>
+              <marker id="timelinepi-loop-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" /></marker>
+              <filter id="timelinepi-token-shadow" x="-40%" y="-40%" width="180%" height="180%"><feDropShadow dx="0" dy="1" stdDeviation="1.4" floodOpacity="0.24" /></filter>
+            </defs>
+
+            <g className="timelinepi-terminal start">
+              <circle cx={startX} cy={baseline} r="11" />
+              <text x={startX} y={baseline - 20}>Start</text>
+            </g>
+            <g className="timelinepi-terminal end">
+              <circle cx={endX} cy={baseline + 48} r="11" />
+              <path d={`M ${endX - 4} ${baseline + 44} L ${endX + 4} ${baseline + 52} M ${endX + 4} ${baseline + 44} L ${endX - 4} ${baseline + 52}`} />
+              <text x={endX} y={baseline + 80}>End</text>
+            </g>
+
+            {visibleActivities.slice(0, 6).map((item, index) => {
+              const node = nodeByName.get(item.name)!;
+              const y = baseline - 60 - index * 22;
+              const path = `M ${startX + 14} ${baseline} C ${node.x * 0.35} ${y}, ${node.x * 0.72} ${y}, ${node.x - 76} ${node.y}`;
+              return <path key={`start-${item.name}`} className="timelinepi-edge terminal-edge" d={path} markerEnd="url(#timelinepi-arrow)" />;
+            })}
+
+            {visibleActivities.slice(-6).map((item, index) => {
+              const node = nodeByName.get(item.name)!;
+              const y = baseline + 96 + index * 18;
+              const path = `M ${node.x + 76} ${node.y} C ${node.x + 180} ${y}, ${endX - 150} ${y}, ${endX - 14} ${baseline + 48}`;
+              return <path key={`end-${item.name}`} className="timelinepi-edge terminal-edge" d={path} markerEnd="url(#timelinepi-arrow)" />;
+            })}
+
+            {topTransitions.map((transition, index) => {
+              const from = nodeByName.get(transition.from);
+              const to = nodeByName.get(transition.to);
+              if (!from || !to) return null;
+              const isLoop = transition.from === transition.to || to.index < from.index;
+              const id = `timelinepi-path-${index}`;
+              const path = transitionPath(from, to, index, isLoop);
+              const strokeWidth = 0.7 + Math.sqrt(transition.caseCount / maxTransitionCount) * 4.8;
+              const signal = makeMovementSignal(transition, isLoop);
+              return <g key={id} className={`timelinepi-edge-group ${isLoop ? "is-loop" : ""} ${activeSignal?.id === signal.id ? "is-selected" : ""}`}>
+                <path id={id} className="timelinepi-edge" d={path} strokeWidth={strokeWidth} markerEnd={`url(#${isLoop ? "timelinepi-loop-arrow" : "timelinepi-arrow"})`} />
+                <path className="timelinepi-edge-hit" d={path} onClick={() => openTransition(signal)} />
+                <text className="timelinepi-edge-count"><textPath href={`#${id}`} startOffset="50%">{transition.caseCount.toLocaleString()}</textPath></text>
+                <circle className={`timelinepi-token ${signal.tone} speed-${signal.durationClass}`} r={isLoop ? 5.2 : 4.5} filter="url(#timelinepi-token-shadow)" onClick={event => { event.stopPropagation(); openTimeline(signal); }}>
+                  <animateMotion dur={`${motionDuration(transition.avgHours, signal.durationClass)}s`} repeatCount="indefinite" rotate="auto" begin={`${(index % 10) * 0.28}s`}>
+                    <mpath href={`#${id}`} />
+                  </animateMotion>
+                  <title>{signal.title}</title>
+                </circle>
+                <circle className="timelinepi-token-hit" r="14" onClick={event => { event.stopPropagation(); openTimeline(signal); }}>
+                  <animateMotion dur={`${motionDuration(transition.avgHours, signal.durationClass)}s`} repeatCount="indefinite" rotate="auto" begin={`${(index % 10) * 0.28}s`}>
+                    <mpath href={`#${id}`} />
+                  </animateMotion>
+                </circle>
+              </g>;
+            })}
+
+            {visibleActivities.map(item => {
+              const node = nodeByName.get(item.name)!;
+              const signal = makeQueueSignal(node);
+              const volumeScale = Math.sqrt(item.count / maxActivityCount);
+              const nodeWidth = Math.max(128, Math.min(270, 104 + volumeScale * 120));
+              const dotRadius = Math.max(12, Math.min(48, 12 + volumeScale * 36));
+              const label = item.name.length > 20 ? `${item.name.slice(0, 18)}...` : item.name;
+              return <g key={item.name} className={`timelinepi-node ${signal.tone} ${activeSignal?.id === signal.id ? "is-selected" : ""}`} onClick={() => openTimeline(signal)} role="button" tabIndex={0}>
+                <text className="timelinepi-node-count" x={node.x + nodeWidth / 2 - 10} y={node.y - 18}>{compactCount(item.count)}</text>
+                <rect x={node.x - nodeWidth / 2} y={node.y - 15} width={nodeWidth} height="30" rx="15" />
+                <circle className="claim-volume-dot-hit" cx={node.x - nodeWidth / 2 + dotRadius + 6} cy={node.y} r={Math.max(22, dotRadius + 8)} />
+                <circle className="claim-volume-dot" cx={node.x - nodeWidth / 2 + dotRadius + 6} cy={node.y} r={dotRadius} />
+                <text className="node-count-in-dot" x={node.x - nodeWidth / 2 + dotRadius + 6} y={node.y + 3}>{compactCount(item.count)}</text>
+                <text className="timelinepi-node-label" x={node.x - nodeWidth / 2 + dotRadius * 2 + 18} y={node.y + 3}>{label}</text>
+                <title>{signal.title}</title>
+              </g>;
+            })}
+          </svg>
         </div>
-        <label className="inline-select">
-          <span>Claim segment</span>
-          <select value={segment} onChange={event => { setSegment(event.target.value); setSelectedMapItem(null); }}>
-            {segmentOptions.map(option => <option key={option} value={option}>{option}</option>)}
-          </select>
-        </label>
-        <div className="control-stat"><span>Claims</span><strong>{filtered.caseCount.toLocaleString()}</strong></div>
-        <div className="control-stat"><span>Self-loop claims</span><strong>{selfLoops.reduce((sum, item) => sum + item.caseCount, 0).toLocaleString()}</strong></div>
-        <div className="control-stat"><span>Queues</span><strong>{filtered.activities.length}</strong></div>
       </div>
-      <div className="map-signal-strip">
-        <span className="start-signal"><i /> Start: <strong>{start?.name || "No start detected"}</strong> {start ? `(${start.count.toLocaleString()})` : ""}</span>
-        <span className="loop-signal"><i /> Loops: <strong>{selfLoops[0]?.from || "None"}</strong> {selfLoops[0] ? `(${selfLoops[0].caseCount.toLocaleString()} claims)` : ""}</span>
-        <span className="end-signal"><i /> End: <strong>{end?.name || "No end detected"}</strong> {end ? `(${end.count.toLocaleString()})` : ""}</span>
-      </div>
-      <div className="map-legend" aria-label="Process time legend">
-        <span><i className="green" /> Green: fast, under 2 days</span>
-        <span><i className="orange" /> Orange: 2-7 days</span>
-        <span><i className="red" /> Red: over 7 days</span>
-      </div>
-      <div className="map-stage">
-        <div className="map-wrap" onClick={selectMapItem}>
-          <div dangerouslySetInnerHTML={{ __html: map.svg }} />
+
+
+    </div>
+
+    {activeSignal && selectedModal === "timeline" && <div className="timeline-modal-backdrop" role="dialog" aria-modal="true" aria-label="Timeline details">
+      <div className="timeline-modal-window">
+        <button className="timeline-modal-close" type="button" onClick={closeTimeline} aria-label="Close timeline">x</button>
+        <header className="timeline-modal-header">
+          <h2>Timeline #{Math.abs(activeSignal.id.split("").reduce((sum, char) => sum + char.charCodeAt(0), 0) * 971).toString()}</h2>
+          <button type="button">Export</button>
+          <button type="button">Open in new window</button>
+        </header>
+        <div className="timeline-modal-body">
+          <button className="timeline-modal-arrow left" type="button" aria-label="Previous timeline">‹</button>
+          <div className="timeline-event-canvas">
+            <div className="timeline-event-line" />
+            {activeSignal.timeline.map((item, index) => {
+              const y = 42 + index * 64 + (index > 2 ? 210 : 0);
+              const isGap = index === 2 && activeSignal.avgHours;
+              return <div className="timeline-event-row" style={{ top: y }} key={`${activeSignal.id}-modal-${index}`}>
+                {isGap && <div className={`timeline-gap-label ${activeSignal.durationClass || "fast"}`}>{formatHours(activeSignal.avgHours || 0)}</div>}
+                <div className="timeline-event-time">{index === 0 ? "Start" : index === activeSignal.timeline.length - 1 ? "Complete" : `Step ${index + 1}`}</div>
+                <span className={`timeline-event-index ${item.tone || activeSignal.durationClass || "fast"}`}>{index + 1}</span>
+                <div className="timeline-event-text"><b>{item.label}</b><span>{item.detail}</span></div>
+              </div>;
+            })}
+          </div>
+          <aside className="timeline-modal-side">
+            <section>
+              <h3>Tags</h3>
+              <select><option>Add new tag</option></select>
+            </section>
+            <section>
+              <h3>View</h3>
+              <label><input type="checkbox" /> Show subprocesses</label>
+              <label><input type="checkbox" defaultChecked /> Show attributes</label>
+              <label><input type="checkbox" defaultChecked /> Change only</label>
+              <label><input type="checkbox" defaultChecked /> Show duration</label>
+            </section>
+            <section>
+              <h3>Statistics</h3>
+              <dl>
+                <div><dt>Duration</dt><dd>{activeSignal.avgHours ? formatHours(activeSignal.avgHours) : "0 hours"}</dd></div>
+                <div><dt>Number of events</dt><dd>{activeSignal.count.toLocaleString()}</dd></div>
+                <div><dt>Number of unique events</dt><dd>{activeSignal.timeline.length}</dd></div>
+                <div><dt>Max gap</dt><dd>{activeSignal.avgHours ? formatHours(activeSignal.avgHours) : "0 hours"}</dd></div>
+                <div><dt>Average gap</dt><dd>{activeSignal.avgHours ? formatHours((activeSignal.avgHours || 0) / Math.max(activeSignal.timeline.length - 1, 1)) : "0 hours"}</dd></div>
+                <div><dt>Cost</dt><dd>0 $</dd></div>
+              </dl>
+            </section>
+          </aside>
+          <button className="timeline-modal-arrow right" type="button" aria-label="Next timeline">›</button>
         </div>
-        {selectedDetail && <MapDetailPopup detail={selectedDetail} onClose={() => setSelectedMapItem(null)} />}
       </div>
-      {selfLoops.length > 0 && (
-        <div className="loop-ledger" aria-label="Actual self-looping claims">
-          {selfLoops.slice(0, 8).map(loop => (
-            <div key={loop.from}>
-              <span className="loop-glyph">loop</span>
-              <strong>{loop.from}</strong>
-              <b>{loop.caseCount.toLocaleString()} claims</b>
-              <small>{loop.count.toLocaleString()} repeats</small>
-            </div>
-          ))}
+    </div>}
+
+    {activeSignal && selectedModal === "transition" && <div className="transition-modal-backdrop" role="dialog" aria-modal="true" aria-label="Process transition">
+      <div className="transition-modal-window">
+        <button className="transition-modal-close" type="button" onClick={closeTimeline} aria-label="Close transition">x</button>
+        <header><h2>Process transition</h2></header>
+        <div className="transition-modal-content">
+          <h3>Duration of selected transition</h3>
+          <div className="transition-range-row">
+            <label><span>MIN</span><input value="0" readOnly /><small>secs</small></label>
+            <div className="transition-average"><span>Average</span><b>{activeSignal.avgHours ? formatHours(activeSignal.avgHours) : "0 hours"}</b><small>min - max</small></div>
+            <label><span>MAX</span><input value={String(Math.round((activeSignal.avgHours || 0) * 3600 * 2))} readOnly /><small>secs</small></label>
+          </div>
+          <div className="transition-distribution">
+            <div className={`transition-spike ${activeSignal.durationClass || "fast"}`} />
+            <div className="transition-line" />
+            <span className="transition-min-pill">0</span>
+            <span className="transition-max-pill">{activeSignal.avgHours ? formatHours(activeSignal.avgHours * 2) : "0 hours"}</span>
+            <span className="transition-handle left" />
+            <span className="transition-handle right" />
+          </div>
+          <h3>Breakdown by dimensions</h3>
+          <div className="transition-breakdown-grid" aria-label="Breakdown dimension by state">
+            {transitionBreakdown.map((item, index) => (
+              <div className="transition-breakdown-card" key={`${activeSignal.id}-state-${index}`}>
+                <b>{item.label}</b>
+                <span>{item.value.toFixed(0)}% ({item.count.toLocaleString()})</span>
+                <i style={{ "--spark": `${Math.max(8, Math.min(100, item.value))}%` } as React.CSSProperties} />
+              </div>
+            ))}
+          </div>
         </div>
-      )}
-    </section>
-  );
+        <footer><button type="button" onClick={closeTimeline}>Cancel</button><button type="button" onClick={closeTimeline}>Apply</button></footer>
+      </div>
+    </div>}
+  </section>;
 }
 
 type MapAnalysis = {
@@ -447,203 +706,171 @@ type MapAnalysis = {
   ends: { name: string; count: number }[];
 };
 
-type MapDetail = {
-  id: string;
-  title: string;
-  type: "Queue" | "Journey" | "Loop" | "Start" | "End";
-  tone: "green" | "orange" | "red" | "teal";
-  summary: string;
-  metrics: { label: string; value: string }[];
-  journey: string[];
-};
-
-function MapDetailPopup({ detail, onClose }: { detail: MapDetail; onClose: () => void }) {
-  return (
-    <div className="map-popover" role="dialog" aria-modal="false" aria-label="Claims journey detail">
-      <button className="map-popover-close" type="button" onClick={onClose} aria-label="Close detail">x</button>
-      <div className={`map-popover-kicker tone-${detail.tone}`}>{detail.type}</div>
-      <h3>{detail.title}</h3>
-      <p>{detail.summary}</p>
-      <div className="map-popover-metrics">
-        {detail.metrics.map(metric => (
-          <div key={metric.label}>
-            <span>{metric.label}</span>
-            <strong>{metric.value}</strong>
-          </div>
-        ))}
-      </div>
-      <div className="map-popover-journey">
-        {detail.journey.map((step, index) => <span key={`${step}-${index}`}>{step}</span>)}
-      </div>
-    </div>
-  );
-}
-
-function transitionVisual(avgHours: number, maxWait: number) {
-  const days = avgHours / 24;
-  if (days < 2) {
-    return { color: "#16A34A", marker: "arrow-green", tone: "green" as const, speed: 2.25 + (avgHours / maxWait) * 2, label: "Fast" };
-  }
-  if (days <= 7) {
-    return { color: "#D97706", marker: "arrow-orange", tone: "orange" as const, speed: 24 + (avgHours / maxWait) * 18, label: "Moderate" };
-  }
-  return { color: "#B42318", marker: "arrow-red", tone: "red" as const, speed: 42 + (avgHours / maxWait) * 26, label: "Slow" };
-}
-
-function buildMapSvg(analysis: MapAnalysis) {
-  const transitions = analysis.transitions.slice(0, 90);
+function buildMapSvg(analysis: MapAnalysis): { svg: string; width: number; height: number } {
+  const transitions = [...analysis.transitions]
+    .sort((a, b) => a.count - b.count)
+    .slice(-90);
   const activities = [...new Set(transitions.flatMap(item => [item.from, item.to]))];
   const volume = new Map(analysis.activities.map(item => [item.name, item.count]));
-  const incoming = new Map<string, number>();
-  const outgoing = new Map<string, number>();
-  transitions.forEach(item => {
-    incoming.set(item.to, (incoming.get(item.to) || 0) + item.caseCount);
-    outgoing.set(item.from, (outgoing.get(item.from) || 0) + item.caseCount);
+  const adjacency = new Map<string, string[]>();
+  const reverseAdjacency = new Map<string, string[]>();
+  transitions.forEach(transition => {
+    if (transition.from === transition.to) return;
+    const targets = adjacency.get(transition.from) || [];
+    targets.push(transition.to);
+    adjacency.set(transition.from, targets);
+    const sources = reverseAdjacency.get(transition.to) || [];
+    sources.push(transition.from);
+    reverseAdjacency.set(transition.to, sources);
   });
-  const positions = new Map<string, [number, number]>();
-  const columns = 6;
-  const xGap = 270;
-  const yGap = 230;
-  const leftPad = 180;
-  const width = Math.max(1780, columns * xGap + leftPad * 2);
-  const rows = Math.max(1, Math.ceil(activities.length / columns));
-  const height = Math.max(860, rows * yGap + 260);
 
-  activities.forEach((activity, index) => {
-    const row = Math.floor(index / columns);
-    const col = index % columns;
-    const x = leftPad + col * xGap + (row % 2) * 65;
-    const y = 150 + row * yGap + (col % 2) * 42;
-    positions.set(activity, [x, Math.min(height - 135, y)]);
+  const weightedDegree = new Map<string, number>();
+  transitions.forEach(transition => {
+    weightedDegree.set(transition.from, (weightedDegree.get(transition.from) || 0) + transition.count);
+    weightedDegree.set(transition.to, (weightedDegree.get(transition.to) || 0) + transition.count);
   });
+  const hub = [...activities].sort((a, b) => (weightedDegree.get(b) || 0) - (weightedDegree.get(a) || 0) || (volume.get(b) || 0) - (volume.get(a) || 0))[0];
+  const distances = (start: string, graph: Map<string, string[]>) => {
+    const result = new Map<string, number>([[start, 0]]);
+    const pending = [start];
+    for (let cursor = 0; cursor < pending.length; cursor += 1) {
+      const source = pending[cursor];
+      (graph.get(source) || []).forEach(target => {
+        if (!result.has(target)) {
+          result.set(target, (result.get(source) || 0) + 1);
+          pending.push(target);
+        }
+      });
+    }
+    return result;
+  };
+  const downstreamDistance = distances(hub, adjacency);
+  const upstreamDistance = distances(hub, reverseAdjacency);
+  const startNames = new Set(analysis.starts.map(item => item.name));
+  const endNames = new Set(analysis.ends.map(item => item.name));
+  const upstream: string[] = [];
+  const downstream: string[] = [];
+  activities.filter(activity => activity !== hub).forEach(activity => {
+    const upstreamSteps = upstreamDistance.get(activity);
+    const downstreamSteps = downstreamDistance.get(activity);
+    if (startNames.has(activity) && !endNames.has(activity)) upstream.push(activity);
+    else if (endNames.has(activity) && !startNames.has(activity)) downstream.push(activity);
+    else if (upstreamSteps !== undefined && (downstreamSteps === undefined || upstreamSteps < downstreamSteps)) upstream.push(activity);
+    else if (downstreamSteps !== undefined) downstream.push(activity);
+    else (upstream.length <= downstream.length ? upstream : downstream).push(activity);
+  });
+  upstream.sort((a, b) => (upstreamDistance.get(a) || 99) - (upstreamDistance.get(b) || 99) || (volume.get(b) || 0) - (volume.get(a) || 0));
+  downstream.sort((a, b) => (downstreamDistance.get(a) || 99) - (downstreamDistance.get(b) || 99) || (volume.get(b) || 0) - (volume.get(a) || 0));
+
+  const width = Math.max(2800, activities.length * 140);
+  const height = 1160;
+  const centerY = 610;
+  const hubX = width / 2;
+  const positions = new Map<string, [number, number]>();
+  const laneOffsets = [0, -82, 82, -41, 41];
+  if (hub) positions.set(hub, [hubX, centerY]);
+  const placeSide = (items: string[], direction: -1 | 1) => {
+    const innerX = hubX + direction * 235;
+    const outerX = direction < 0 ? 150 : width - 150;
+    items.forEach((activity, index) => {
+      const progress = items.length === 1 ? 0 : index / (items.length - 1);
+      const x = innerX + (outerX - innerX) * progress;
+      positions.set(activity, [x, centerY + laneOffsets[index % laneOffsets.length]]);
+    });
+  };
+  placeSide(upstream, -1);
+  placeSide(downstream, 1);
 
   const maxCount = Math.max(...transitions.map(item => item.count), 1);
-  const maxClaims = Math.max(...transitions.map(item => item.caseCount), 1);
   const maxWait = Math.max(...transitions.map(item => item.avgHours), 1);
-  const details: MapDetail[] = [];
-
+  const palette = ["#78C878", "#B3D766", "#E2CC45", "#F47B67"];
   const edgeSvg = transitions.map((transition, index) => {
     const [x1, y1] = positions.get(transition.from) || [0, 0];
     const [x2, y2] = positions.get(transition.to) || [0, 0];
     const isLoop = transition.from === transition.to;
-    const visual = transitionVisual(transition.avgHours, maxWait);
-    const cx = (x1 + x2) / 2;
-    const laneOffset = (index % 5) * 46 - 92;
-    const cy = (y1 + y2) / 2 + laneOffset;
-    const pathId = `edge-${index}`;
-    const detailId = `transition-${index}`;
-    const days = transition.avgHours / 24;
-    const loopRadiusX = 102 + Math.min(58, transition.caseCount / Math.max(1, analysis.caseCount) * 280);
-    const loopRadiusY = 92;
-    const path = isLoop
-      ? `M ${x1 + 38} ${y1 - 8} C ${x1 + loopRadiusX} ${y1 - loopRadiusY}, ${x1 - loopRadiusX} ${y1 - loopRadiusY}, ${x1 - 38} ${y1 - 8}`
-      : `M ${x1 + 76} ${y1} Q ${cx} ${cy} ${x2 - 76} ${y2}`;
-
-    details.push({
-      id: detailId,
-      title: isLoop ? `${transition.from} rework loop` : `${transition.from} to ${transition.to}`,
-      type: isLoop ? "Loop" : "Journey",
-      tone: visual.tone,
-      summary: isLoop
-        ? `Claims are looping back to ${transition.from}. This means the client journey is repeating the same queue instead of moving forward.`
-        : `Claims travel from ${transition.from} to ${transition.to}. The dot and line color show average process time: green is fast, orange is moderate, and red is slow.`,
-      metrics: [
-        { label: "Claims", value: transition.caseCount.toLocaleString() },
-        { label: "Events", value: transition.count.toLocaleString() },
-        { label: "Avg process time", value: `${days.toFixed(days >= 10 ? 0 : 1)} days` },
-        { label: "Speed class", value: visual.label },
-      ],
-      journey: isLoop ? [transition.from, "loops back", transition.to] : [transition.from, "moves to", transition.to],
-    });
-
-    return `
-      <g data-map-detail="${detailId}" style="cursor:pointer">
-        <path id="${pathId}" d="${path}" fill="none" stroke="${visual.color}" stroke-width="${isLoop ? 4.4 : 2 + transition.caseCount / maxClaims * 7}" opacity="${isLoop ? ".94" : ".72"}" marker-end="url(#${visual.marker})" stroke-linecap="round" />
-        <path d="${path}" fill="none" stroke="transparent" stroke-width="28" />
-        <circle r="${7 + transition.caseCount / maxClaims * 11}" fill="${visual.color}" opacity=".96">
-          <animateMotion dur="${visual.speed.toFixed(2)}s" repeatCount="indefinite"><mpath href="#${pathId}" /></animateMotion>
-        </circle>
-        ${isLoop ? `<text x="${x1}" y="${y1 - loopRadiusY - 18}" text-anchor="middle" font-size="12" font-weight="900" fill="#15803D">${transition.caseCount.toLocaleString()} claims loop here</text>` : ""}
-      </g>`;
+    const weight = Math.sqrt(transition.count / maxCount);
+    const strokeWidth = .6 + weight * 3.4 + (isLoop ? .35 : 0);
+    const opacity = .18 + weight * .68;
+    const pathId = `process-edge-${index}`;
+    let path: string;
+    if (isLoop) {
+      const direction = index % 2 ? -1 : 1;
+      const anchorX = x1 + direction * 70;
+      const controlX = x1 + direction * (102 + weight * 42);
+      const loopHeight = 44 + weight * 58;
+      path = `M ${anchorX} ${y1 - 18} C ${controlX} ${y1 - loopHeight}, ${controlX} ${y1 + loopHeight}, ${anchorX} ${y1 + 18}`;
+    } else if (x2 > x1 + 10) {
+      const startX = x1 + 76;
+      const endX = x2 - 76;
+      const bend = Math.max(55, (endX - startX) * .42);
+      path = `M ${startX} ${y1} C ${startX + bend} ${y1}, ${endX - bend} ${y2}, ${endX} ${y2}`;
+    } else if (Math.abs(x2 - x1) <= 10) {
+      const side = index % 2 ? -1 : 1;
+      const edgeX = x1 + side * 76;
+      const controlX = x1 + side * (125 + weight * 55);
+      path = `M ${edgeX} ${y1} C ${controlX} ${y1}, ${controlX} ${y2}, ${edgeX} ${y2}`;
+    } else {
+      const startX = x1 - 76;
+      const endX = x2 + 76;
+      const controlY = Math.max(42, Math.min(y1, y2) - 105 - (index % 5) * 30);
+      path = `M ${startX} ${y1} C ${startX - 90} ${controlY}, ${endX + 90} ${controlY}, ${endX} ${y2}`;
+    }
+    const tokenCount = Math.min(5, Math.max(1, 1 + Math.floor(weight * 4)));
+    const baseDuration = Math.max(2.2, 8.5 - weight * 3.5 + transition.avgHours / maxWait * 3);
+    const ageBand = Math.min(3, Math.floor(transition.avgHours / maxWait * 4));
+    const tokens = Array.from({ length: tokenCount }, (_, tokenIndex) => {
+      const tokenBand = Math.min(3, ageBand + Math.floor(tokenIndex / 3));
+      const color = palette[tokenBand];
+      const ageSpeed = [10, 2, 1.3, .8][tokenBand];
+      const duration = baseDuration / ageSpeed;
+      const offset = duration / tokenCount * tokenIndex;
+      const radius = (2.3 + weight * 1.3) * 2 * (isLoop ? 1.7 : 1);
+      return `<circle class="map-token${isLoop ? " self-loop-token" : ""}" r="${radius.toFixed(2)}" fill="${color}" stroke="${isLoop ? "#FFFFFF" : "none"}" stroke-width="${isLoop ? "1.2" : "0"}" opacity=".96"><animateMotion dur="${duration.toFixed(2)}s" begin="-${offset.toFixed(2)}s" repeatCount="indefinite"><mpath href="#${pathId}" /></animateMotion></circle>`;
+    }).join("");
+    const label = isLoop
+      ? `<text class="map-edge-label" x="${x1}" y="${y1 - 29}" text-anchor="middle">${transition.caseCount.toLocaleString()}</text>`
+      : weight > .46 ? `<text class="map-edge-label" x="${(x1 + x2) / 2}" y="${(y1 + y2) / 2 - 7}" text-anchor="middle">${transition.caseCount.toLocaleString()}</text>` : "";
+    const title = `${escapeHtml(transition.from)} to ${escapeHtml(transition.to)} | ${transition.caseCount.toLocaleString()} claims | ${transition.count.toLocaleString()} movements | ${formatHours(transition.avgHours)}`;
+    return `<g class="process-edge-group ${isLoop ? "self-loop" : ""}"><title>${title}</title><path id="${pathId}" class="process-edge" d="${path}" fill="none" stroke="${isLoop ? "#2F9E44" : "#35AFC0"}" stroke-width="${strokeWidth.toFixed(2)}" opacity="${opacity.toFixed(2)}" marker-end="url(#${isLoop ? "arrow-loop" : "arrow"})"/><path class="process-edge-hit" d="${path}" fill="none" stroke="transparent" stroke-width="${Math.max(14, strokeWidth + 8).toFixed(2)}"/>${tokens}${label}</g>`;
   }).join("");
 
-  const nodeSvg = activities.map((activity, index) => {
+  const compact = (count: number) => count >= 1000 ? `${(count / 1000).toFixed(count >= 10000 ? 0 : 1)}k` : count.toLocaleString();
+  const nodeSvg = activities.map(activity => {
     const [x, y] = positions.get(activity) || [0, 0];
     const count = volume.get(activity) || 0;
-    const label = activity.length > 23 ? `${activity.slice(0, 20)}...` : activity;
-    const detailId = `node-${index}`;
-    details.push({
-      id: detailId,
-      title: activity,
-      type: "Queue",
-      tone: "teal",
-      summary: `${count.toLocaleString()} events touch this queue. Incoming and outgoing counts explain how claims enter and leave this part of the journey.`,
-      metrics: [
-        { label: "Events", value: count.toLocaleString() },
-        { label: "Incoming claims", value: (incoming.get(activity) || 0).toLocaleString() },
-        { label: "Outgoing claims", value: (outgoing.get(activity) || 0).toLocaleString() },
-      ],
-      journey: ["claim arrives", activity, "claim exits"],
-    });
-    return `
-      <g data-map-detail="${detailId}" style="cursor:pointer">
-        <rect x="${x - 84}" y="${y - 24}" width="168" height="48" rx="16" fill="#FFFFFF" stroke="#72C7CC" stroke-width="1.7"><title>${escapeHtml(activity)} | ${count} events</title></rect>
-        <circle cx="${x - 62}" cy="${y}" r="13" fill="#E6F7F8" stroke="#72C7CC" />
-        <text x="${x - 62}" y="${y + 3.5}" text-anchor="middle" font-size="8" font-weight="900" fill="#0F766E">${count}</text>
-        <text x="${x - 42}" y="${y + 4}" font-size="9" font-weight="800" fill="#182230">${escapeHtml(label)}</text>
-      </g>`;
+    const label = activity.length > 24 ? `${activity.slice(0, 21)}...` : activity;
+    return `<g class="process-node"><title>${escapeHtml(activity)} | ${count.toLocaleString()} events</title><rect x="${x - 76}" y="${y - 15}" width="152" height="30" rx="15"/><circle cx="${x - 61}" cy="${y}" r="9"/><text class="node-count" x="${x - 61}" y="${y + 3}">${compact(count)}</text><text class="node-label" x="${x - 47}" y="${y + 3}">${escapeHtml(label)}</text></g>`;
   }).join("");
 
-  const startX = width / 2;
-  const startY = 48;
-  const endX = width / 2;
-  const endY = height - 48;
+  const startX = Math.min(width - 260, hubX + 510);
+  const endX = Math.min(width - 170, hubX + 690);
+  const startY = 82;
+  const endY = height - 72;
+  const maxStart = Math.max(...analysis.starts.map(item => item.count), 1);
+  const maxEnd = Math.max(...analysis.ends.map(item => item.count), 1);
   const startSvg = analysis.starts.slice(0, 8).map((item, index) => {
     const target = positions.get(item.name);
     if (!target) return "";
-    const detailId = `start-${index}`;
-    details.push({
-      id: detailId,
-      title: `Start at ${item.name}`,
-      type: "Start",
-      tone: "green",
-      summary: `${item.count.toLocaleString()} claims begin their journey at this activity.`,
-      metrics: [{ label: "Starting claims", value: item.count.toLocaleString() }],
-      journey: ["claim opened", item.name, "next queue"],
-    });
-    return `<g data-map-detail="${detailId}" style="cursor:pointer"><path d="M ${startX} ${startY + 16} Q ${startX} ${Math.max(90, target[1] - 100)} ${target[0]} ${target[1] - 28}" fill="none" stroke="#16A34A" stroke-width="1.8" marker-end="url(#arrow-green)" opacity=".78" stroke-linecap="round"/></g>`;
+    const edgeWidth = .7 + Math.sqrt(item.count / maxStart) * 2.3;
+    const path = `M ${startX} ${startY + 13} C ${startX} ${startY + 110}, ${target[0]} ${target[1] - 105}, ${target[0]} ${target[1] - 16}`;
+    return `<path class="terminal-edge" d="${path}" fill="none" stroke="#35AFC0" stroke-width="${edgeWidth.toFixed(2)}" opacity=".66" marker-end="url(#arrow)"><title>Start to ${escapeHtml(item.name)} | ${item.count.toLocaleString()} claims</title></path>`;
   }).join("");
-  const endSvg = analysis.ends.slice(0, 8).map((item, index) => {
+  const endSvg = analysis.ends.slice(0, 8).map(item => {
     const source = positions.get(item.name);
     if (!source) return "";
-    const detailId = `end-${index}`;
-    details.push({
-      id: detailId,
-      title: `End after ${item.name}`,
-      type: "End",
-      tone: "green",
-      summary: `${item.count.toLocaleString()} claims complete after this activity.`,
-      metrics: [{ label: "Completed claims", value: item.count.toLocaleString() }],
-      journey: [item.name, "completion", "claim closed"],
-    });
-    return `<g data-map-detail="${detailId}" style="cursor:pointer"><path d="M ${source[0]} ${source[1] + 28} Q ${endX} ${Math.min(endY - 62, source[1] + 134)} ${endX} ${endY - 16}" fill="none" stroke="#16A34A" stroke-width="1.8" marker-end="url(#arrow-green)" opacity=".78" stroke-linecap="round"/></g>`;
+    const edgeWidth = .7 + Math.sqrt(item.count / maxEnd) * 2.3;
+    const path = `M ${source[0]} ${source[1] + 16} C ${source[0]} ${source[1] + 105}, ${endX} ${endY - 110}, ${endX} ${endY - 13}`;
+    return `<path class="terminal-edge" d="${path}" fill="none" stroke="#35AFC0" stroke-width="${edgeWidth.toFixed(2)}" opacity=".66" marker-end="url(#arrow)"><title>${escapeHtml(item.name)} to End | ${item.count.toLocaleString()} claims</title></path>`;
   }).join("");
-  const terminalSvg = `
-    <g data-map-detail="${details.find(item => item.type === "Start")?.id || ""}" style="cursor:pointer"><circle cx="${startX}" cy="${startY}" r="14" fill="#FFFFFF" stroke="#16A34A" stroke-width="2"><title>Claim start</title></circle></g>
-    <g data-map-detail="${details.find(item => item.type === "End")?.id || ""}" style="cursor:pointer"><circle cx="${endX}" cy="${endY}" r="14" fill="#FFFFFF" stroke="#16A34A" stroke-width="2"><title>Claim end</title></circle>
-    <path d="M ${endX - 4} ${endY - 4} L ${endX + 4} ${endY + 4} M ${endX + 4} ${endY - 4} L ${endX - 4} ${endY + 4}" stroke="#0F766E" stroke-width="1.8" stroke-linecap="round"/></g>`;
+  const terminalSvg = `<g class="map-terminal"><circle cx="${startX}" cy="${startY}" r="12"/><text x="${startX}" y="${startY - 20}">Start</text></g><g class="map-terminal end"><circle cx="${endX}" cy="${endY}" r="12"/><path d="M ${endX - 4} ${endY - 4} L ${endX + 4} ${endY + 4} M ${endX + 4} ${endY - 4} L ${endX - 4} ${endY + 4}"/><text x="${endX}" y="${endY - 20}">End</text></g>`;
+  const defs = `<defs><marker id="arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#35AFC0"/></marker><marker id="arrow-loop" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#2F9E44"/></marker></defs>`;
   return {
-    svg: `<svg width="100%" height="${height}" viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMin meet" xmlns="http://www.w3.org/2000/svg" style="display:block;background:#FBFDFE">
-    <defs>
-      <marker id="arrow-green" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#16A34A"/></marker>
-      <marker id="arrow-orange" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#D97706"/></marker>
-      <marker id="arrow-red" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#B42318"/></marker>
-    </defs>
-    ${startSvg}${endSvg}${edgeSvg}${nodeSvg}${terminalSvg}
-  </svg>`,
-    details,
+    svg: `<svg class="milestone-process-map" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Claims milestone process map">${defs}${startSvg}${endSvg}${edgeSvg}${nodeSvg}${terminalSvg}</svg>`,
+    width,
+    height,
   };
 }
+
 function Bottlenecks({ analysis }: { analysis: Analysis }) {
   const [metric, setMetric] = useState<"impact" | "average" | "count">("impact");
   const rows = useMemo(() => [...analysis.bottlenecks].sort((a, b) => {
