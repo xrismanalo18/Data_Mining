@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import DeepDiveSolution, { type ClaimsAnalysis } from "@/components/DeepDiveSolution";
+import ProcessDiscoveryPanel, { type TaskMiningAnalysis } from "@/components/ProcessDiscoveryPanel";
 
 type Dataset = {
   id: string;
@@ -54,6 +55,7 @@ type Analysis = {
   objects: { name: string; count: number }[];
   recommendations: { severity: string; title: string; detail: string }[];
   claims: ClaimsAnalysis;
+  taskMining?: TaskMiningAnalysis;
 };
 
 type PathItem = {
@@ -81,6 +83,7 @@ const tabs = [
   ["recommendations", "Recommendations"],
   ["objects", "Objects"],
   ["actions", "Actions"],
+  ["process-discovery", "Process Discovery"],
 ] as const;
 
 export default function ProcessMiningApp() {
@@ -356,6 +359,7 @@ function renderTab(tab: string, analysis: Analysis) {
   if (tab === "queues") return <Queues analysis={analysis} />;
   if (tab === "recommendations") return <Recommendations analysis={analysis} />;
   if (tab === "objects") return <Objects analysis={analysis} />;
+  if (tab === "process-discovery") return <ProcessDiscoveryPanel analysis={analysis} />;
   return <Actions />;
 }
 
@@ -1356,6 +1360,7 @@ function countFor(tab: string, analysis: Analysis) {
   if (tab === "queues") return analysis.activities.length;
   if (tab === "recommendations") return analysis.recommendations.length;
   if (tab === "objects") return analysis.objects.length;
+  if (tab === "process-discovery") return analysis.taskMining?.steps.length ?? analysis.activities.length;
   return 0;
 }
 

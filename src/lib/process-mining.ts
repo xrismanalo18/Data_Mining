@@ -177,6 +177,15 @@ export function rowsToEvents(rows: Record<string, unknown>[], mapping: Mapping) 
     .filter(([key, value]) => key.endsWith("_id") && value)
     .map(([key, value]) => [key, value as string] as const);
 
+  const taskMiningAttrs = ["event_type", "window_title", "keystrokes", "mouse_clicks", "duration_seconds"];
+  const headerLookup = new Map<string, string>();
+  if (rows.length) {
+    for (const header of Object.keys(rows[0])) headerLookup.set(normalize(header), header);
+  }
+  const extraKeys = taskMiningAttrs
+    .map(key => [key, headerLookup.get(key)] as const)
+    .filter((entry): entry is readonly [string, string] => Boolean(entry[1]));
+
   const events: EventRow[] = [];
   for (const row of rows) {
     const caseId = String(row[mapping.case_id] ?? "").trim();
@@ -188,6 +197,10 @@ export function rowsToEvents(rows: Record<string, unknown>[], mapping: Mapping) 
     const attrs: Record<string, string> = {};
     for (const [key, column] of objectKeys) {
       attrs[key] = String(row[column] ?? "").trim();
+    }
+    for (const [key, column] of extraKeys) {
+      const value = String(row[column] ?? "").trim();
+      if (value) attrs[key] = value;
     }
 
     events.push({
@@ -248,6 +261,7 @@ export function analyze(events: EventRow[]) {
       if (event.resource) resources.add(event.resource);
       totalCost += event.cost || 0;
       for (const [key, value] of Object.entries(event.attrs)) {
+        if (key === "process_id") continue;
         if (key.endsWith("_id") && value) objects.add(`${key.replace("_id", "")}: ${value}`);
       }
     }
@@ -302,6 +316,7 @@ export function analyze(events: EventRow[]) {
   }).sort((a, b) => b.count - a.count);
 
   const claims = analyzeClaims(cases, durations);
+  const taskMining = analyzeTaskMining(cases, events);
 
   return {
     caseCount: cases.size,
@@ -334,6 +349,39 @@ export function analyze(events: EventRow[]) {
     objects: objects.entries().slice(0, 30).map(([name, count]) => ({ name, count })),
     recommendations: recommendations(average(durations), cases.size ? reworkCases / cases.size * 100 : 0, bottlenecks),
     claims,
+    taskMining,
+  };
+}
+
+function analyzeTaskMining(cases: Map<string, EventRow[]>, events: EventRow[]) {
+  const tagged = events.filter(event => event.attrs.event_type);
+  if (!tagged.length || tagged.length < events.length * 0.5) return null;
+  const steps = new Map<string, { events: number; keystrokes: number; mouseClicks: number; totalDurationSeconds: number }>();
+  const totals = { keystrokes: 0, mouseClicks: 0, durationSeconds: 0 };
+  for (const event of tagged) {
+    const keystrokes = Number(event.attrs.keystrokes) || 0;
+    const mouseClicks = Number(event.attrs.mouse_clicks) || 0;
+    const duration = Number(event.attrs.duration_seconds) || 0;
+    totals.keystrokes += keystrokes;
+    totals.mouseClicks += mouseClicks;
+    totals.durationSeconds += duration;
+    const step = steps.get(event.activity) || { events: 0, keystrokes: 0, mouseClicks: 0, totalDurationSeconds: 0 };
+    step.events += 1;
+    step.keystrokes += keystrokes;
+    step.mouseClicks += mouseClicks;
+    step.totalDurationSeconds += duration;
+    steps.set(event.activity, step);
+  }
+  return {
+    sessionCount: cases.size,
+    totals,
+    steps: [...steps.entries()]
+      .map(([name, step]) => ({
+        name,
+        ...step,
+        avgDurationSeconds: step.events ? step.totalDurationSeconds / step.events : 0,
+      }))
+      .sort((a, b) => b.totalDurationSeconds - a.totalDurationSeconds),
   };
 }
 
