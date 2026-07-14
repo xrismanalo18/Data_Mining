@@ -4,6 +4,7 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import DeepDiveSolution, { type ClaimsAnalysis } from "@/components/DeepDiveSolution";
 import ProcessDiscoveryPanel, { type TaskMiningAnalysis } from "@/components/ProcessDiscoveryPanel";
+import { DISCOVERY_FLOW } from "@/lib/discovery-flow-static";
 
 type Dataset = {
   id: string;
@@ -359,7 +360,7 @@ function renderTab(tab: string, analysis: Analysis) {
   if (tab === "queues") return <Queues analysis={analysis} />;
   if (tab === "recommendations") return <Recommendations analysis={analysis} />;
   if (tab === "objects") return <Objects analysis={analysis} />;
-  if (tab === "process-discovery") return <ProcessDiscoveryPanel analysis={analysis} />;
+  if (tab === "process-discovery") return <ProcessDiscoveryPanel />;
   return <Actions />;
 }
 
@@ -1360,7 +1361,7 @@ function countFor(tab: string, analysis: Analysis) {
   if (tab === "queues") return analysis.activities.length;
   if (tab === "recommendations") return analysis.recommendations.length;
   if (tab === "objects") return analysis.objects.length;
-  if (tab === "process-discovery") return analysis.taskMining?.steps.length ?? analysis.activities.length;
+  if (tab === "process-discovery") return DISCOVERY_FLOW.steps.length;
   return 0;
 }
 
