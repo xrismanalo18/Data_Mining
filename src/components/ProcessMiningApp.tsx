@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import DeepDiveSolution, { type ClaimsAnalysis } from "@/components/DeepDiveSolution";
+import ClaimsDiscovery from "@/components/ClaimsDiscovery";
 import ProcessDiscoveryPanel, { type TaskMiningAnalysis } from "@/components/ProcessDiscoveryPanel";
 
 type Dataset = {
@@ -84,6 +85,7 @@ const tabs = [
   ["objects", "Objects"],
   ["actions", "Actions"],
   ["process-discovery", "Process Discovery"],
+  ["claims-discovery", "Claims Discovery"],
 ] as const;
 
 export default function ProcessMiningApp() {
@@ -360,6 +362,7 @@ function renderTab(tab: string, analysis: Analysis) {
   if (tab === "recommendations") return <Recommendations analysis={analysis} />;
   if (tab === "objects") return <Objects analysis={analysis} />;
   if (tab === "process-discovery") return <ProcessDiscoveryPanel analysis={analysis} />;
+  if (tab === "claims-discovery") return <ClaimsDiscovery analysis={analysis} />;
   return <Actions />;
 }
 
@@ -384,6 +387,7 @@ function MapPanel({ analysis }: { analysis: Analysis }) {
   const [playing, setPlaying] = useState(true);
   const [selectedSignalRaw, setSelectedSignalRaw] = useState(null);
   const [selectedModal, setSelectedModal] = useState<"timeline" | "transition" | null>(null);
+  const mapShellRef = useRef<HTMLDivElement>(null);
   const openTimeline = (signal: MapSignal) => { setSelectedSignalRaw(signal as never); setSelectedModal("timeline"); };
   const openTransition = (signal: MapSignal) => { setSelectedSignalRaw(signal as never); setSelectedModal("transition"); };
   const closeTimeline = () => { setSelectedSignalRaw(null as never); setSelectedModal(null); };
@@ -392,35 +396,58 @@ function MapPanel({ analysis }: { analysis: Analysis }) {
   const visibleNames = useMemo(() => new Set(visibleActivities.map(item => item.name)), [visibleActivities]);
   const totalEvents = Math.max(visibleActivities.reduce((sum, item) => sum + item.count, 0), 1);
   const maxActivityCount = Math.max(...visibleActivities.map(item => item.count), 1);
-  const topTransitions = useMemo(() => map.transitions
-    .filter(item => visibleNames.has(item.from) && visibleNames.has(item.to))
-    .sort((left, right) => right.caseCount - left.caseCount)
-    .slice(0, 48), [map.transitions, visibleNames]);
+  const topTransitions = useMemo(() => {
+    const eligible = map.transitions
+      .filter(item => visibleNames.has(item.from) && visibleNames.has(item.to))
+      .sort((left, right) => right.caseCount - left.caseCount);
+    const outgoing = new Map<string, string[]>();
+    for (const item of eligible) outgoing.set(item.from, [...(outgoing.get(item.from) || []), item.to]);
+    const closesCycle = (from: string, to: string) => {
+      if (from === to) return true;
+      const pending = [to];
+      const visited = new Set<string>();
+      while (pending.length) {
+        const current = pending.pop()!;
+        if (current === from) return true;
+        if (visited.has(current)) continue;
+        visited.add(current);
+        pending.push(...(outgoing.get(current) || []));
+      }
+      return false;
+    };
+    const loops = eligible.filter(item => closesCycle(item.from, item.to));
+    const selected = new Map(loops.map(item => [`${item.from}\u0000${item.to}`, item]));
+    for (const item of eligible) {
+      if (selected.size >= 48 && !selected.has(`${item.from}\u0000${item.to}`)) break;
+      selected.set(`${item.from}\u0000${item.to}`, item);
+    }
+    return [...selected.values()];
+  }, [map.transitions, visibleNames]);
   const maxTransitionCount = Math.max(...topTransitions.map(item => item.caseCount), 1);
   const maxTransitionWait = Math.max(...topTransitions.map(item => item.avgHours), 1);
   const durationClass = (hours: number) => hours <= 24 ? "fast" : hours <= 72 ? "steady" : hours <= 168 ? "slow" : "late";
   const durationLabel = (hours: number) => hours <= 24 ? "Fast" : hours <= 72 ? "Steady" : hours <= 168 ? "Slow" : "Late";
   const motionDuration = (hours: number, durationClass?: string) => {
     const normalized = Math.min(1, Math.max(0, hours / Math.max(maxTransitionWait, 1)));
-    const base = 0.75 + normalized * 5.4;
-    const multiplier = durationClass === "late" ? 4.8 : durationClass === "slow" ? 1.75 : durationClass === "steady" ? 1.15 : 0.72;
-    return (base * multiplier).toFixed(1);
+    if (durationClass === "late") return (15 + normalized * 10).toFixed(1);
+    if (durationClass === "slow") return (8 + normalized * 6).toFixed(1);
+    if (durationClass === "steady") return (3.8 + normalized * 3).toFixed(1);
+    return (.65 + normalized * 1.2).toFixed(1);
   };
-  const changeZoom = (amount: number) => setZoom(current => Number(Math.min(1.55, Math.max(0.45, current + amount)).toFixed(2)));
+  const changeZoom = (amount: number) => setZoom(current => Number(Math.min(1.55, Math.max(0.25, current + amount)).toFixed(2)));
   const compactCount = (count: number) => count >= 1000 ? `${(count / 1000).toFixed(count >= 10000 ? 0 : 1)}K` : count.toLocaleString();
 
-  const width = 2200;
-  const height = 780;
-  const startX = 36;
-  const endX = 2164;
-  const baseline = 360;
-  const nodeByName = new Map(visibleActivities.map((activity, index) => {
-    const usableWidth = width - 160;
-    const x = visibleActivities.length <= 1 ? width / 2 : 76 + (usableWidth / Math.max(1, visibleActivities.length - 1)) * index;
-    const yOffsets = [0, -42, 42, -88, 88, -132, 132];
-    const y = baseline + yOffsets[index % yOffsets.length];
-    return [activity.name, { ...activity, index, x, y }];
-  }));
+  const layout = useMemo(() => buildBreadthfirstMapLayout(visibleActivities, topTransitions), [visibleActivities, topTransitions]);
+  const { width, height, baseline, nodeByName } = layout;
+  const startX = 48;
+  const endX = width - 48;
+  const fitMap = () => {
+    const shell = mapShellRef.current;
+    if (!shell) return setZoom(0.72);
+    const fitted = Math.min((shell.clientWidth - 24) / width, (shell.clientHeight - 24) / height, 1);
+    setZoom(Number(Math.max(0.25, fitted).toFixed(2)));
+    shell.scrollTo({ left: 0, top: 0, behavior: "smooth" });
+  };
 
   const makeQueueSignal = (activity: { name: string; count: number; x: number; y: number }): MapSignal => {
     const share = activity.count / totalEvents * 100;
@@ -499,19 +526,26 @@ function MapPanel({ analysis }: { analysis: Analysis }) {
   ] : [];
 
   const transitionPath = (from: { x: number; y: number; index: number }, to: { x: number; y: number; index: number }, order: number, isLoop: boolean) => {
+    const clampY = (value: number) => Math.max(64, Math.min(height - 82, value));
     if (isLoop && from.index === to.index) {
       const side = order % 2 === 0 ? 1 : -1;
-      const loopWidth = 68 + (order % 4) * 16;
-      const loopHeight = 22 + (order % 3) * 8;
-      const anchorX = from.x + side * 58;
-      return `M ${anchorX} ${from.y - 7} C ${anchorX + side * loopWidth} ${from.y - loopHeight}, ${anchorX + side * loopWidth} ${from.y + loopHeight}, ${anchorX} ${from.y + 7}`;
+      const loopWidth = 96 + (order % 4) * 22;
+      const loopHeight = 58 + (order % 3) * 20;
+      const anchorX = from.x + side * 70;
+      const upperY = clampY(from.y - loopHeight);
+      const lowerY = clampY(from.y + loopHeight);
+      return `M ${anchorX} ${from.y - 12} C ${anchorX + side * loopWidth} ${upperY}, ${anchorX + side * loopWidth} ${lowerY}, ${anchorX} ${from.y + 12}`;
     }
     const direction = to.index >= from.index ? 1 : -1;
-    const loopLane = direction < 0 ? 86 + (order % 8) * 23 : 28 + (order % 5) * 10;
-    const vertical = direction < 0 ? loopLane * (order % 2 === 0 ? -1 : 1) : (to.y - from.y) * 0.35 - loopLane;
-    const c1x = from.x + Math.max(48, Math.abs(to.x - from.x) * 0.38) * direction;
-    const c2x = to.x - Math.max(48, Math.abs(to.x - from.x) * 0.38) * direction;
-    return `M ${from.x + 66 * direction} ${from.y} C ${c1x} ${from.y + vertical}, ${c2x} ${to.y + vertical}, ${to.x - 66 * direction} ${to.y}`;
+    const span = Math.abs(to.index - from.index);
+    const edgeBand = direction < 0 || span > 3;
+    const lane = edgeBand
+      ? (order % 2 === 0 ? 76 + (order % 5) * 34 : height - 86 - (order % 5) * 34)
+      : clampY((from.y + to.y) / 2 + (order % 2 === 0 ? -1 : 1) * (64 + (order % 4) * 24));
+    const bend = Math.max(72, Math.abs(to.x - from.x) * (edgeBand ? 0.48 : 0.34));
+    const c1x = from.x + bend * direction;
+    const c2x = to.x - bend * direction;
+    return `M ${from.x + 66 * direction} ${from.y} C ${c1x} ${lane}, ${c2x} ${lane}, ${to.x - 66 * direction} ${to.y}`;
   };
 
   return <section className="card process-map-card timelinepi-map-card">
@@ -522,15 +556,22 @@ function MapPanel({ analysis }: { analysis: Analysis }) {
     <div className="map-toolbar">
       <div className="map-motion-controls" aria-label="Map motion controls">
         <button className="icon-button" type="button" onClick={() => setPlaying(value => !value)} title={playing ? "Pause motion" : "Play motion"}>{playing ? "Pause" : "Play"}</button>
-        <button type="button" onClick={() => changeZoom(-0.12)} disabled={zoom <= 0.45}>-</button>
+        <button type="button" onClick={() => changeZoom(-0.12)} disabled={zoom <= 0.25}>-</button>
         <span>{Math.round(zoom * 100)}%</span>
         <button type="button" onClick={() => changeZoom(0.12)} disabled={zoom >= 1.55}>+</button>
-        <button type="button" onClick={() => setZoom(0.72)}>Fit</button>
+        <button type="button" onClick={fitMap}>Fit</button>
       </div>
     </div>
 
     <div className="timelinepi-map-grid timelinepi-map-grid-full">
-      <div className="timelinepi-map-shell">
+      <div
+        className="timelinepi-map-shell"
+        ref={mapShellRef}
+        onWheel={event => {
+          event.preventDefault();
+          changeZoom(event.deltaY < 0 ? 0.08 : -0.08);
+        }}
+      >
         <div className="map-scaler" style={{ width: width * zoom, height: height * zoom }}>
           <svg className={`milestone-process-map timelinepi-process-map ${playing ? "is-playing" : "is-paused"}`} viewBox={`0 0 ${width} ${height}`} style={{ transform: `scale(${zoom})`, transformOrigin: "top left" }} role="img" aria-label="Timeline-style process map">
             <defs>
@@ -567,16 +608,17 @@ function MapPanel({ analysis }: { analysis: Analysis }) {
               const from = nodeByName.get(transition.from);
               const to = nodeByName.get(transition.to);
               if (!from || !to) return null;
-              const isLoop = transition.from === transition.to || to.index < from.index;
+              const isSelfLoop = transition.from === transition.to;
+              const isLoop = isSelfLoop || to.index < from.index;
               const id = `timelinepi-path-${index}`;
-              const path = transitionPath(from, to, index, isLoop);
-              const strokeWidth = 0.7 + Math.sqrt(transition.caseCount / maxTransitionCount) * 4.8;
+              const path = transitionPath(from, to, index, isSelfLoop);
+              const strokeWidth = 0.45 + Math.sqrt(transition.caseCount / maxTransitionCount) * 2.6;
               const signal = makeMovementSignal(transition, isLoop);
-              return <g key={id} className={`timelinepi-edge-group ${isLoop ? "is-loop" : ""} ${activeSignal?.id === signal.id ? "is-selected" : ""}`}>
+              return <g key={id} className={`timelinepi-edge-group ${isLoop ? "is-loop" : ""} ${isSelfLoop ? "is-self-loop" : ""} ${activeSignal?.id === signal.id ? "is-selected" : ""}`}>
                 <path id={id} className="timelinepi-edge" d={path} strokeWidth={strokeWidth} markerEnd={`url(#${isLoop ? "timelinepi-loop-arrow" : "timelinepi-arrow"})`} />
                 <path className="timelinepi-edge-hit" d={path} onClick={() => openTransition(signal)} />
                 <text className="timelinepi-edge-count"><textPath href={`#${id}`} startOffset="50%">{transition.caseCount.toLocaleString()}</textPath></text>
-                <circle className={`timelinepi-token ${signal.tone} speed-${signal.durationClass}`} r={isLoop ? 5.2 : 4.5} filter="url(#timelinepi-token-shadow)" onClick={event => { event.stopPropagation(); openTimeline(signal); }}>
+                <circle className={`timelinepi-token ${signal.tone} speed-${signal.durationClass}`} r={isSelfLoop ? 5.8 : isLoop ? 5 : 4.2} filter="url(#timelinepi-token-shadow)" onClick={event => { event.stopPropagation(); openTimeline(signal); }}>
                   <animateMotion dur={`${motionDuration(transition.avgHours, signal.durationClass)}s`} repeatCount="indefinite" rotate="auto" begin={`${(index % 10) * 0.28}s`}>
                     <mpath href={`#${id}`} />
                   </animateMotion>
@@ -873,6 +915,91 @@ function buildMapSvg(analysis: MapAnalysis): { svg: string; width: number; heigh
     width,
     height,
   };
+}
+
+function buildBreadthfirstMapLayout(
+  activities: { name: string; count: number }[],
+  transitions: { from: string; to: string; caseCount: number }[],
+) {
+  const names = new Set(activities.map(item => item.name));
+  const outgoing = new Map<string, string[]>();
+  const incoming = new Map(activities.map(item => [item.name, 0]));
+
+  for (const transition of transitions) {
+    if (transition.from === transition.to || !names.has(transition.from) || !names.has(transition.to)) continue;
+    const targets = outgoing.get(transition.from) || [];
+    if (!targets.includes(transition.to)) targets.push(transition.to);
+    outgoing.set(transition.from, targets);
+    incoming.set(transition.to, (incoming.get(transition.to) || 0) + 1);
+  }
+
+  const rank = new Map<string, number>();
+  const queue = activities
+    .filter(item => (incoming.get(item.name) || 0) === 0)
+    .sort((left, right) => right.count - left.count)
+    .map(item => item.name);
+  if (!queue.length && activities[0]) queue.push(activities[0].name);
+
+  for (const root of queue) rank.set(root, 0);
+  for (let cursor = 0; cursor < queue.length; cursor += 1) {
+    const source = queue[cursor];
+    const sourceRank = rank.get(source) || 0;
+    for (const target of outgoing.get(source) || []) {
+      if (rank.has(target)) continue;
+      rank.set(target, sourceRank + 1);
+      queue.push(target);
+    }
+  }
+
+  let nextRank = Math.max(0, ...rank.values()) + 1;
+  for (const activity of activities) {
+    if (rank.has(activity.name)) continue;
+    rank.set(activity.name, nextRank);
+    const branch = [activity.name];
+    for (let cursor = 0; cursor < branch.length; cursor += 1) {
+      const source = branch[cursor];
+      for (const target of outgoing.get(source) || []) {
+        if (rank.has(target)) continue;
+        rank.set(target, (rank.get(source) || nextRank) + 1);
+        branch.push(target);
+      }
+    }
+    nextRank = Math.max(nextRank + 1, ...rank.values()) + 1;
+  }
+
+  const columns = new Map<number, typeof activities>();
+  for (const activity of activities) {
+    const column = rank.get(activity.name) || 0;
+    const items = columns.get(column) || [];
+    items.push(activity);
+    columns.set(column, items);
+  }
+  for (const items of columns.values()) items.sort((left, right) => right.count - left.count);
+
+  const columnGap = 320;
+  const rowGap = 132;
+  const sidePadding = 170;
+  const verticalPadding = 110;
+  const maxRows = Math.max(1, ...[...columns.values()].map(items => items.length));
+  const maxRank = Math.max(0, ...rank.values());
+  const width = Math.max(1180, sidePadding * 2 + (maxRank + 1) * columnGap);
+  const height = Math.max(760, verticalPadding * 2 + Math.max(0, maxRows - 1) * rowGap + 160);
+  const baseline = height / 2;
+  const nodeByName = new Map<string, { name: string; count: number; index: number; x: number; y: number }>();
+
+  for (const [column, items] of columns) {
+    const columnHeight = Math.max(0, items.length - 1) * rowGap;
+    items.forEach((activity, row) => {
+      nodeByName.set(activity.name, {
+        ...activity,
+        index: column,
+        x: sidePadding + column * columnGap,
+        y: baseline - columnHeight / 2 + row * rowGap,
+      });
+    });
+  }
+
+  return { width, height, baseline, nodeByName };
 }
 
 function Bottlenecks({ analysis }: { analysis: Analysis }) {
@@ -1361,6 +1488,7 @@ function countFor(tab: string, analysis: Analysis) {
   if (tab === "recommendations") return analysis.recommendations.length;
   if (tab === "objects") return analysis.objects.length;
   if (tab === "process-discovery") return analysis.taskMining?.steps.length ?? analysis.activities.length;
+  if (tab === "claims-discovery") return analysis.pathAnalysis.length;
   return 0;
 }
 
