@@ -18,7 +18,7 @@ export async function POST(request: Request) {
     }
 
     const parsed = await parseUploadedFile(file);
-    const detected = detectMapping(parsed.headers);
+    const detected = detectMapping(parsed.headers, parsed.rows);
     let blobUrl: string | null = null;
     if (process.env.BLOB_READ_WRITE_TOKEN) {
       const blob = await put(`process-uploads/${Date.now()}-${file.name}`, file, {
@@ -39,6 +39,8 @@ export async function POST(request: Request) {
       uploadId: result.rows[0].id,
       name,
       filename: file.name,
+      sheetName: parsed.sheetName,
+      headerRow: parsed.headerRow,
       rowCount: parsed.rows.length,
       headers: parsed.headers,
       detectedMapping: detected,

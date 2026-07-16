@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { query } from "@/lib/db";
-import { rowsToEvents, type Mapping } from "@/lib/process-mining";
+import { resolveMapping, rowsToEvents, type Mapping } from "@/lib/process-mining";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -28,13 +28,14 @@ export async function POST(request: Request) {
     const row = preview.rows[0];
     if (!row) return NextResponse.json({ error: "Upload preview not found." }, { status: 404 });
 
-    const mapping = input.mapping as Mapping;
+    let mapping = input.mapping as Mapping;
     const headers = row.headers;
     for (const header of headers) {
       const key = header.toLowerCase().trim().replace(/\s+/g, "_");
       if (key.endsWith("_id") && !mapping[key]) mapping[key] = header;
     }
 
+    mapping = resolveMapping(row.rows, mapping);
     const events = rowsToEvents(row.rows, mapping);
     if (!events.length) {
       return NextResponse.json({ error: "No valid process events were found with the selected mapping." }, { status: 400 });

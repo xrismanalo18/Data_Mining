@@ -5,6 +5,8 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import DeepDiveSolution, { type ClaimsAnalysis } from "@/components/DeepDiveSolution";
 import ClaimsDiscovery from "@/components/ClaimsDiscovery";
 import ProcessDiscoveryPanel, { type TaskMiningAnalysis } from "@/components/ProcessDiscoveryPanel";
+import QuickBottleneckAnalysis from "@/components/QuickBottleneckAnalysis";
+import type { CorrelationAnalysis } from "@/lib/process-mining";
 
 type Dataset = {
   id: string;
@@ -19,6 +21,8 @@ type Preview = {
   uploadId: string;
   name: string;
   filename: string;
+  sheetName?: string;
+  headerRow?: number;
   rowCount: number;
   headers: string[];
   detectedMapping: Record<string, string>;
@@ -57,6 +61,16 @@ type Analysis = {
   recommendations: { severity: string; title: string; detail: string }[];
   claims: ClaimsAnalysis;
   taskMining?: TaskMiningAnalysis;
+  correlations: CorrelationAnalysis;
+  touchpointGroups: {
+    touchpoints: number;
+    caseCount: number;
+    eventCount: number;
+    wasteHours: number;
+    share: number;
+    activities: { name: string; count: number }[];
+    transitions: { from: string; to: string; count: number; caseCount: number; avgHours: number }[];
+  }[];
 };
 
 type PathItem = {
@@ -85,7 +99,8 @@ const tabs = [
   ["objects", "Objects"],
   ["actions", "Actions"],
   ["process-discovery", "Process Discovery"],
-  ["claims-discovery", "Claims Discovery"],
+  ["claims-discovery", "Correlation Analysis"],
+  ["quick-bottleneck", "Quick Bottleneck Analysis"],
 ] as const;
 
 export default function ProcessMiningApp() {
@@ -262,6 +277,12 @@ function MappingPreview({
   onConfirm: () => void;
   busy: boolean;
 }) {
+  const missingRequired = [
+    ["case_id", "Case ID"],
+    ["activity", "Activity"],
+    ["timestamp", "Timestamp"],
+  ].filter(([key]) => !mapping[key]);
+
   function update(key: string, value: string) {
     setMapping({ ...mapping, [key]: value });
   }
@@ -273,7 +294,15 @@ function MappingPreview({
       <div className="summary-row">
         <span>File: <strong>{preview.filename}</strong></span>
         <span>Rows: <strong>{preview.rowCount.toLocaleString()}</strong></span>
+        {preview.sheetName && <span>Sheet: <strong>{preview.sheetName}</strong>{preview.headerRow ? ` · header row ${preview.headerRow}` : ""}</span>}
       </div>
+      {!missingRequired.length ? (
+        <div className="notice">Required fields were inferred from this file. Review the selections before running the analysis.</div>
+      ) : (
+        <div className="notice error">
+          Select {missingRequired.map(([, label]) => label).join(", ")} from the columns below. The file does not contain a confident automatic match.
+        </div>
+      )}
       <div className="grid cols">
         <div>
           <Select label="Case ID" value={mapping.case_id || ""} headers={preview.headers} onChange={value => update("case_id", value)} />
@@ -283,7 +312,7 @@ function MappingPreview({
         <div>
           <Select label="Resource / User" value={mapping.resource || ""} headers={preview.headers} onChange={value => update("resource", value)} optional />
           <Select label="Cost / Amount" value={mapping.cost || ""} headers={preview.headers} onChange={value => update("cost", value)} optional />
-          <div className="form-actions"><button className="button" onClick={onConfirm} disabled={busy}>{busy ? "Saving..." : "Run Analysis"}</button></div>
+          <div className="form-actions"><button className="button" onClick={onConfirm} disabled={busy || Boolean(missingRequired.length)}>{busy ? "Saving..." : "Run Analysis"}</button></div>
         </div>
       </div>
       <h3 className="subsection-title">Data Preview</h3>
@@ -363,6 +392,7 @@ function renderTab(tab: string, analysis: Analysis) {
   if (tab === "objects") return <Objects analysis={analysis} />;
   if (tab === "process-discovery") return <ProcessDiscoveryPanel analysis={analysis} />;
   if (tab === "claims-discovery") return <ClaimsDiscovery analysis={analysis} />;
+  if (tab === "quick-bottleneck") return <QuickBottleneckAnalysis />;
   return <Actions />;
 }
 
@@ -385,13 +415,29 @@ type MapSignal = {
 function MapPanel({ analysis }: { analysis: Analysis }) {
   const [zoom, setZoom] = useState(0.72);
   const [playing, setPlaying] = useState(true);
+  const [selectedTouchpoints, setSelectedTouchpoints] = useState<number | null>(null);
   const [selectedSignalRaw, setSelectedSignalRaw] = useState(null);
   const [selectedModal, setSelectedModal] = useState<"timeline" | "transition" | null>(null);
   const mapShellRef = useRef<HTMLDivElement>(null);
   const openTimeline = (signal: MapSignal) => { setSelectedSignalRaw(signal as never); setSelectedModal("timeline"); };
   const openTransition = (signal: MapSignal) => { setSelectedSignalRaw(signal as never); setSelectedModal("transition"); };
   const closeTimeline = () => { setSelectedSignalRaw(null as never); setSelectedModal(null); };
-  const map = useMemo(() => ({ caseCount: analysis.caseCount, activities: analysis.activities, transitions: analysis.transitions }), [analysis]);
+  const touchpointGroups = analysis.touchpointGroups || [];
+  const defaultTouchpoints = touchpointGroups.find(group => group.touchpoints === 1)?.touchpoints ?? touchpointGroups[0]?.touchpoints ?? null;
+  const selectedThreshold = selectedTouchpoints ?? defaultTouchpoints;
+  const selectedCohort = useMemo(
+    () => selectedThreshold === null ? null : buildCumulativeTouchpointMap(touchpointGroups, selectedThreshold),
+    [selectedThreshold, touchpointGroups],
+  );
+  const map = useMemo(() => selectedCohort
+    ? { caseCount: selectedCohort.caseCount, activities: selectedCohort.activities, transitions: selectedCohort.transitions }
+    : { caseCount: analysis.caseCount, activities: analysis.activities, transitions: analysis.transitions },
+  [analysis.activities, analysis.caseCount, analysis.transitions, selectedCohort]);
+  useEffect(() => { setSelectedTouchpoints(defaultTouchpoints); closeTimeline(); }, [analysis.touchpointGroups, defaultTouchpoints]);
+  const selectTouchpoints = (touchpoints: number) => {
+    setSelectedTouchpoints(touchpoints);
+    closeTimeline();
+  };
   const visibleActivities = useMemo(() => map.activities.slice(0, 22), [map.activities]);
   const visibleNames = useMemo(() => new Set(visibleActivities.map(item => item.name)), [visibleActivities]);
   const totalEvents = Math.max(visibleActivities.reduce((sum, item) => sum + item.count, 0), 1);
@@ -549,7 +595,13 @@ function MapPanel({ analysis }: { analysis: Analysis }) {
   };
 
   return <section className="card process-map-card timelinepi-map-card">
-    <PanelHeader kicker="Process map" title="Timeline-style milestone flow" detail="Moving claim tokens can be clicked for queue descriptions and operational interpretation." />
+    <PanelHeader
+      kicker="Process map"
+      title="Timeline-style milestone flow"
+      detail={selectedCohort && selectedThreshold !== null
+        ? `Showing ${selectedCohort.caseCount.toLocaleString()} claims with 1 through ${selectedThreshold} touchpoint${selectedThreshold === 1 ? "" : "s"} and ${formatWasteDays(selectedCohort.wasteHours / 24)} of elapsed inter-event waste.`
+        : "Move the touchpoint selector to group similar claims and redraw the spaghetti graph."}
+    />
     <div className="milestone-reference-strip" aria-label="Milestone view legend">
       <img src="/milestone.png" alt="Milestone view timeline age legend" />
     </div>
@@ -563,7 +615,7 @@ function MapPanel({ analysis }: { analysis: Analysis }) {
       </div>
     </div>
 
-    <div className="timelinepi-map-grid timelinepi-map-grid-full">
+    <div className="timelinepi-map-grid timelinepi-map-grid-full touchpoint-map-layout">
       <div
         className="timelinepi-map-shell"
         ref={mapShellRef}
@@ -652,8 +704,12 @@ function MapPanel({ analysis }: { analysis: Analysis }) {
           </svg>
         </div>
       </div>
-
-
+      <TouchpointExplorer
+        groups={touchpointGroups}
+        totalCases={analysis.caseCount}
+        selectedTouchpoints={selectedThreshold}
+        onSelect={selectTouchpoints}
+      />
     </div>
 
     {activeSignal && selectedModal === "timeline" && <div className="timeline-modal-backdrop" role="dialog" aria-modal="true" aria-label="Timeline details">
@@ -742,6 +798,111 @@ function MapPanel({ analysis }: { analysis: Analysis }) {
       </div>
     </div>}
   </section>;
+}
+
+function TouchpointExplorer({
+  groups,
+  totalCases,
+  selectedTouchpoints,
+  onSelect,
+}: {
+  groups: Analysis["touchpointGroups"];
+  totalCases: number;
+  selectedTouchpoints: number | null;
+  onSelect: (touchpoints: number) => void;
+}) {
+  if (!groups.length) return <aside className="touchpoint-explorer"><div className="touchpoint-empty">No touchpoint groups are available.</div></aside>;
+  const defaultIndex = Math.max(0, groups.findIndex(row => row.touchpoints === 1));
+  const selectedIndex = Math.max(0, groups.findIndex(row => row.touchpoints === selectedTouchpoints));
+  const selected = groups[selectedIndex] || groups[0];
+  const included = groups.slice(0, selectedIndex + 1);
+  const includedCases = included.reduce((sum, group) => sum + group.caseCount, 0);
+  const includedShare = totalCases ? includedCases / totalCases * 100 : 0;
+  const includedWasteDays = included.reduce((sum, group) => sum + group.wasteHours, 0) / 24;
+  const averageWasteDays = includedCases ? includedWasteDays / includedCases : 0;
+  const maxCount = Math.max(...groups.map(row => row.caseCount), 1);
+  const linePosition = `${(selectedIndex + 1) / groups.length * 100}%`;
+
+  return <aside className="touchpoint-explorer" aria-label="Claims grouped by touchpoint count">
+    <header>
+      <div><span>Case segmentation</span><strong>Claims by touchpoints</strong></div>
+      <button type="button" onClick={() => onSelect(groups[defaultIndex].touchpoints)} disabled={selectedIndex === defaultIndex}>Reset to 1</button>
+    </header>
+    <div className="touchpoint-selection-summary">
+      <div><b>{groups[0].touchpoints}–{selected.touchpoints} touchpoint{selected.touchpoints === 1 ? "" : "s"}</b><span>{includedCases.toLocaleString()} claims · {includedShare.toFixed(1)}%</span></div>
+      <div className="touchpoint-waste"><small>Waste in days</small><strong>{formatWasteDays(includedWasteDays)}</strong><span>{formatWasteDays(averageWasteDays)} avg / claim</span></div>
+    </div>
+    <div className="touchpoint-chart" style={{ "--touchpoint-rows": groups.length, "--touchpoint-line": linePosition } as React.CSSProperties}>
+      <span className="touchpoint-threshold-line" aria-hidden="true" />
+      <div className="touchpoint-slider-column">
+        <input
+          aria-label="Include claims up to this touchpoint count"
+          type="range"
+          min="0"
+          max={Math.max(groups.length - 1, 0)}
+          step="1"
+          value={selectedIndex}
+          disabled={groups.length <= 1}
+          onChange={event => onSelect(groups[Number(event.target.value)]?.touchpoints ?? groups[0].touchpoints)}
+        />
+      </div>
+      <div className="touchpoint-bars">
+        {groups.map((row, index) => {
+          const included = index <= selectedIndex;
+          const boundary = index === selectedIndex;
+          const width = Math.max(3, row.caseCount / maxCount * 100);
+          return <button
+            type="button"
+            key={row.touchpoints}
+            className={`${included ? "included" : ""} ${boundary ? "boundary" : ""}`}
+            onClick={() => onSelect(row.touchpoints)}
+            aria-pressed={included}
+          >
+            <span>{row.touchpoints}</span>
+            <i><em style={{ width: `${width}%` }} /></i>
+            <b>{row.caseCount.toLocaleString()}</b>
+            <small>{row.share.toFixed(1)}%</small>
+          </button>;
+        })}
+      </div>
+    </div>
+    <footer><span>Waste = elapsed time between consecutive recorded events</span><b>Drag the line down to accumulate groups; drag it up to remove them.</b></footer>
+  </aside>;
+}
+
+function buildCumulativeTouchpointMap(groups: Analysis["touchpointGroups"], threshold: number) {
+  const included = groups.filter(group => group.touchpoints <= threshold);
+  const activities = new Map<string, number>();
+  const transitions = new Map<string, { from: string; to: string; count: number; caseCount: number; weightedHours: number }>();
+  let caseCount = 0;
+  let wasteHours = 0;
+
+  for (const group of included) {
+    caseCount += group.caseCount;
+    wasteHours += group.wasteHours;
+    for (const activity of group.activities) activities.set(activity.name, (activities.get(activity.name) || 0) + activity.count);
+    for (const transition of group.transitions) {
+      const key = `${transition.from}\0${transition.to}`;
+      const current = transitions.get(key) || { from: transition.from, to: transition.to, count: 0, caseCount: 0, weightedHours: 0 };
+      current.count += transition.count;
+      current.caseCount += transition.caseCount;
+      current.weightedHours += transition.avgHours * transition.count;
+      transitions.set(key, current);
+    }
+  }
+
+  return {
+    caseCount,
+    wasteHours,
+    activities: [...activities.entries()].map(([name, count]) => ({ name, count })).sort((left, right) => right.count - left.count),
+    transitions: [...transitions.values()].map(transition => ({
+      from: transition.from,
+      to: transition.to,
+      count: transition.count,
+      caseCount: transition.caseCount,
+      avgHours: transition.count ? transition.weightedHours / transition.count : 0,
+    })).sort((left, right) => right.caseCount - left.caseCount || right.count - left.count),
+  };
 }
 
 type MapAnalysis = {
@@ -1488,13 +1649,19 @@ function countFor(tab: string, analysis: Analysis) {
   if (tab === "recommendations") return analysis.recommendations.length;
   if (tab === "objects") return analysis.objects.length;
   if (tab === "process-discovery") return analysis.taskMining?.steps.length ?? analysis.activities.length;
-  if (tab === "claims-discovery") return analysis.pathAnalysis.length;
+  if (tab === "claims-discovery") return analysis.correlations.relationships.length;
+  if (tab === "quick-bottleneck") return "NEW";
   return 0;
 }
 
 function formatHours(hours: number) {
   if (hours >= 48) return `${(hours / 24).toFixed(1)} days`;
   return `${hours.toFixed(1)} hrs`;
+}
+
+function formatWasteDays(days: number) {
+  const digits = days >= 100 ? 0 : days >= 10 ? 1 : 2;
+  return `${days.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits })} days`;
 }
 
 function formatMapDays(hours: number) {
