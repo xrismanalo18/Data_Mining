@@ -358,6 +358,39 @@ tbody tr:hover { background: #f8fafc; }
   font-size: 11px;
   font-weight: 900;
 }
+.journey-signal-strip {
+  display: grid;
+  grid-template-columns: auto repeat(4, minmax(125px, 1fr));
+  align-items: stretch;
+  gap: 6px;
+  flex: 1 1 720px;
+  max-width: 980px;
+  margin: 0 auto;
+}
+.journey-signal-heading,
+.journey-signal-card {
+  display: grid;
+  align-content: center;
+  min-width: 0;
+  border: 1px solid #dbe7ed;
+  border-radius: 7px;
+  background: #f8fbfd;
+}
+.journey-signal-heading { padding: 6px 10px; border-color: #b9dfe3; background: #effcfd; }
+.journey-signal-heading span { color: #0f766e; font-size: 9px; font-weight: 950; letter-spacing: .08em; text-transform: uppercase; }
+.journey-signal-heading b { color: #334155; font-size: 9px; }
+.journey-signal-card { position: relative; gap: 1px; padding: 5px 8px 5px 11px; overflow: hidden; }
+.journey-signal-card::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: #35afc0; }
+.journey-signal-card.loop::before { background: #8b5cf6; }
+.journey-signal-card.slow::before { background: #f59e0b; }
+.journey-signal-card.bottleneck::before { background: #dc2626; }
+.journey-signal-card small { color: #64748b; font-size: 8px; font-weight: 900; letter-spacing: .05em; text-transform: uppercase; }
+.journey-signal-card strong { overflow: hidden; color: #172033; font-size: 10px; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+.journey-signal-card span { overflow: hidden; color: #64748b; font-size: 8px; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 1100px) {
+  .journey-signal-strip { grid-template-columns: repeat(2, minmax(150px, 1fr)); max-width: none; }
+  .journey-signal-heading { grid-column: 1 / -1; }
+}
 .map-canvas {
   width: 100%;
   height: clamp(520px, 70vh, 820px);
@@ -1699,7 +1732,7 @@ main { padding: 10px; }
   stroke-width: 4px;
 }
 .timelinepi-token {
-  fill: #111827;
+  fill: #22c55e;
   stroke: #fff;
   stroke-width: 1.4;
   cursor: pointer;
@@ -2567,6 +2600,10 @@ main { padding: 10px; }
   height: 100%;
   background: #f97316;
 }
+.timelinepi-token.fast { fill: #22c55e; }
+.timelinepi-token.steady { fill: #d6df00; }
+.timelinepi-token.slow { fill: #f59e0b; }
+.timelinepi-token.late { fill: #dc2626; }
 
 /* Claims Discovery */
 .claims-discovery { display: grid; gap: 12px; min-width: 0; }
@@ -2612,7 +2649,7 @@ main { padding: 10px; }
 @media (max-width: 620px) { .correlation-hero { align-items: flex-start; flex-direction: column; }.correlation-toolbar label { grid-template-columns: 1fr; }.correlation-legend { flex-wrap: wrap; } }
 
 /* Process-map touchpoint explorer */
-.timelinepi-map-grid-full.touchpoint-map-layout { grid-template-columns: minmax(0,1fr) 320px; gap: 10px; padding: 0 10px 10px; }
+.timelinepi-map-grid-full.touchpoint-map-layout { grid-template-columns: minmax(0,1fr) 240px; gap: 10px; padding: 0 10px 10px; }
 .touchpoint-map-layout .timelinepi-map-shell { min-width: 0; }
 .touchpoint-explorer { display: grid; grid-template-rows: auto auto minmax(0,1fr) auto; min-width: 0; min-height: 760px; height: calc(100vh - 230px); overflow: hidden; border: 1px solid #cfe1e9; background: #fff; box-shadow: 0 1px 4px rgba(30,55,75,.06); }
 .touchpoint-explorer > header { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 58px; padding: 10px 12px; border-bottom: 1px solid #e4ebf0; }.touchpoint-explorer > header > div { display: grid; gap: 2px; }.touchpoint-explorer > header span { color: #64748b; font-size: 8px; font-weight: 900; letter-spacing: .07em; text-transform: uppercase; }.touchpoint-explorer > header strong { color: #172033; font-size: 13px; }.touchpoint-explorer > header button { padding: 5px 8px; border: 1px solid #cbd5e1; border-radius: 5px; background: #fff; color: #0369a1; font-size: 9px; font-weight: 900; cursor: pointer; }.touchpoint-explorer > header button:disabled { opacity: .38; cursor: default; }

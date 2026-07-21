@@ -4,6 +4,7 @@ import { FormEvent, useMemo, useState } from "react";
 
 import type { AiDashboard } from "@/lib/ai-dashboard";
 import type { BottleneckAnalysis, BottleneckMapping } from "@/lib/quick-bottleneck";
+import { postWorkbook, readApiResponse } from "@/lib/client-file-upload";
 
 type Preview = {
   uploadId: string;
@@ -48,8 +49,8 @@ export default function QuickBottleneckAnalysis() {
     event.preventDefault();
     setBusy(true); setError(""); setAnalysis(null);
     try {
-      const response = await fetch("/api/bottleneck/preview", { method: "POST", body: new FormData(event.currentTarget) });
-      const body = await response.json();
+      const response = await postWorkbook(new FormData(event.currentTarget), "/api/bottleneck/preview");
+      const body = await readApiResponse<Preview & { error?: string }>(response);
       if (!response.ok) throw new Error(body.error || "Unable to preview bottleneck file.");
       setPreview(body); setMapping(body.detectedMapping); setFilename(body.filename);
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Unable to preview bottleneck file."); }
@@ -61,7 +62,7 @@ export default function QuickBottleneckAnalysis() {
     setBusy(true); setError("");
     try {
       const response = await fetch("/api/bottleneck/analyze", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ uploadId: preview.uploadId, mapping }) });
-      const body = await response.json();
+      const body = await readApiResponse<{ analysis: BottleneckAnalysis; filename: string; error?: string }>(response);
       if (!response.ok) throw new Error(body.error || "Unable to run bottleneck analysis.");
       setAnalysis(body.analysis); setFilename(body.filename); setPreview(null);
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Unable to run bottleneck analysis."); }
@@ -119,7 +120,7 @@ function BottleneckDashboard({ analysis, filename, view, setView, onReset }: { a
       setMessages(current => [...current, { role: "user" as const, text: request }, { role: "assistant" as const, text: "Creating a dashboard from the available workbook metricsâ€¦" }].slice(-8));
       try {
         const apiResponse = await fetch("/api/bottleneck/chart-command", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ command: request, analysis }) });
-        const body = await apiResponse.json();
+        const body = await readApiResponse<{ dashboard: AiDashboard; message?: string; error?: string }>(apiResponse);
         if (!apiResponse.ok) throw new Error(body.error || "Unable to create the dashboard.");
         setDynamicDashboard(body.dashboard);
         setView("dynamic");

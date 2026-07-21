@@ -2,10 +2,11 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { query } from "@/lib/db";
+import { parseUploadedFile } from "@/lib/parse-file";
 import { resolveMapping, rowsToEvents, type Mapping } from "@/lib/process-mining";
 
 export const runtime = "nodejs";
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 const INSERT_BATCH_SIZE = 1000;
 
@@ -28,6 +29,7 @@ export async function POST(request: Request) {
     const row = preview.rows[0];
     if (!row) return NextResponse.json({ error: "Upload preview not found." }, { status: 404 });
 
+    const sourceRows = row.blob_url ? await parseBlobRows(row.blob_url, row.filename) : row.rows;
     let mapping = input.mapping as Mapping;
     const headers = row.headers;
     for (const header of headers) {
@@ -35,11 +37,16 @@ export async function POST(request: Request) {
       if (key.endsWith("_id") && !mapping[key]) mapping[key] = header;
     }
 
-    mapping = resolveMapping(row.rows, mapping);
-    const events = rowsToEvents(row.rows, mapping);
+    mapping = resolveMapping(sourceRows, mapping);
+    const events = rowsToEvents(sourceRows, mapping);
     if (!events.length) {
       return NextResponse.json({ error: "No valid process events were found with the selected mapping." }, { status: 400 });
     }
+
+    // The application intentionally exposes a single current process dataset.
+    // Reclaim the previous event-log storage before writing its replacement.
+    await query('truncate table "Data_mining" restart identity');
+    await query("delete from datasets");
 
     const dataset = await query<{ id: string }>(
       `insert into datasets (name, original_filename, blob_url, mapping)
@@ -86,4 +93,13 @@ export async function POST(request: Request) {
       { status: 500 },
     );
   }
+}
+
+async function parseBlobRows(blobUrl: string, filename: string) {
+  const response = await fetch(blobUrl);
+  if (!response.ok) throw new Error("The original uploaded workbook could not be read.");
+  const file = new File([await response.arrayBuffer()], filename, {
+    type: response.headers.get("content-type") || "application/octet-stream",
+  });
+  return (await parseUploadedFile(file)).rows;
 }

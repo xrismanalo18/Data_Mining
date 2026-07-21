@@ -34,7 +34,7 @@ Add environment variables in Vercel:
 - `PROCESS_MINING_DATABASE_URL` can be used as an app-owned override when a managed Vercel integration has stale `POSTGRES_*` credentials. It takes highest priority.
 - `NEXT_PUBLIC_SUPABASE_URL`, for example `https://hamwxevcyrukjbdptteb.supabase.co`
 - `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, your Supabase publishable key
-- `BLOB_READ_WRITE_TOKEN` optional, for storing original uploaded files
+- `BLOB_READ_WRITE_TOKEN` required for files over 4 MB; it also stores original uploaded files
 
 Important: `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` are browser-safe public settings. They are not enough for this app's upload API because the API creates schema objects and inserts normalized event-log rows into `"Data_mining"`. Keep `POSTGRES_URL` server-only and never expose it in client code.
 

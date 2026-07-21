@@ -64,7 +64,6 @@ export default function InteractiveClaimsExplorer({ cases: allCases }: { cases: 
 
   const cases = useMemo(() => {
     let result = allCases;
-    if (filter === "stp") result = result.filter(item => item.stp);
     if (filter === "exception") result = result.filter(item => item.exception);
     if (filter === "reassigned") result = result.filter(item => item.reassignments > 0);
     if (filter === "rework") result = result.filter(item => item.repeatedSteps > 0);
@@ -92,7 +91,6 @@ export default function InteractiveClaimsExplorer({ cases: allCases }: { cases: 
         <div className="explorer-filter-row">
           {[
             ["all", "All"],
-            ["stp", "STP"],
             ["exception", "Exceptions"],
             ["reassigned", "Reassigned"],
             ["rework", "Loops"],
@@ -107,7 +105,7 @@ export default function InteractiveClaimsExplorer({ cases: allCases }: { cases: 
         <ExplorerMetric label="Claims" value={cases.length.toLocaleString()} />
         <ExplorerMetric label="Activities" value={visibleActivities.toLocaleString()} />
         <ExplorerMetric label="Loop claims" value={loopClaims.length.toLocaleString()} danger />
-        <ExplorerMetric label="Loop time" value={formatHours(loopHours)} danger />
+        <ExplorerMetric label="Loop waste" value={formatHours(loopHours)} danger />
         <ExplorerMetric label="Loop savings" value={formatSavings(loopSavings, loopCostAvailable)} detail={loopCostAvailable && loopCost ? `${(loopSavings / loopCost * 100).toFixed(1)}%` : undefined} danger />
       </section>
 
@@ -116,7 +114,7 @@ export default function InteractiveClaimsExplorer({ cases: allCases }: { cases: 
           <div className="canvas-toolbar">
             <div>
               <strong>{selected?.caseId || "No matching claim"}</strong>
-              {selected && <span className={selected.repeatedSteps ? "waste-signal" : "straight-signal"}>{selected.repeatedSteps ? `${selected.repeatedSteps} loops` : "Straight path"}</span>}
+              {selected && <span className={selected.repeatedSteps ? "waste-signal" : "straight-signal"}>{selected.repeatedSteps ? `${selected.repeatedSteps} loops · ${formatHours(selected.loopWasteHours)} waste` : "No loop waste"}</span>}
             </div>
             <div className="canvas-legend">
               <span><i className="legend-line normal" /> Actual</span>
@@ -151,7 +149,7 @@ export default function InteractiveClaimsExplorer({ cases: allCases }: { cases: 
             {cases.slice(0, 50).map(item => (
               <button key={item.caseId} className={selected?.caseId === item.caseId ? "active" : ""} onClick={() => { setSelectedCaseId(item.caseId); setSelectedStep(null); }}>
                 <span><strong>{item.caseId}</strong><small>{item.path.length} events · {formatHours(item.durationHours)}</small></span>
-                <b className={item.repeatedSteps ? "loop-count" : ""}>{item.repeatedSteps || "STP"}</b>
+                <b className={item.loopWasteHours > 0 ? "loop-count" : ""} title="Loop waste">{formatHours(item.loopWasteHours)}</b>
               </button>
             ))}
           </div>

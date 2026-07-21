@@ -146,7 +146,7 @@ const commonObjects = [
 
 const aliases: Record<string, string[]> = {
   case_id: ["case_id", "case", "caseid", "case_key", "process_instance", "document_id", "baseclid", "clcl_claim_id"],
-  activity: ["activity", "activity_name", "event", "event_name", "task", "step", "queue", "wqdf_desc3", "wqdf_desc2", "wqdf_desc"],
+  activity: ["activity", "activity_name", "event", "event_name", "touchpoint", "touchpoint_name", "task", "step", "queue", "wqdf_desc3", "wqdf_desc2", "wqdf_desc"],
   timestamp: ["timestamp", "time", "event_time", "datetime", "date", "created_at", "wmhs_route_dt2", "wmhs_route_dt"],
   resource: ["resource", "user", "owner", "agent", "employee", "usus_usr_id", "wrol_role_desc2"],
   cost: ["cost", "amount", "value", "expense", "clcl_tot_chg_amt", "clck_net_pymt_amt"],
@@ -168,7 +168,7 @@ type ColumnStats = {
 
 const headerHints: Record<"case_id" | "activity" | "timestamp" | "resource" | "cost", string[]> = {
   case_id: ["case", "claim", "order", "invoice", "ticket", "document", "instance", "trace", "process", "request", "record", "reference", "id", "key", "number", "no"],
-  activity: ["activity", "event", "task", "step", "stage", "status", "queue", "action", "operation", "transition", "description", "desc", "name", "type"],
+  activity: ["activity", "event", "touchpoint", "task", "step", "stage", "status", "queue", "action", "operation", "transition", "description", "desc", "name", "type"],
   timestamp: ["timestamp", "datetime", "date", "time", "created", "updated", "occurred", "completed", "started", "ended"],
   resource: ["resource", "user", "owner", "agent", "employee", "assignee", "handler", "operator", "role", "team"],
   cost: ["cost", "amount", "value", "expense", "price", "charge", "payment", "paid", "total"],
@@ -374,10 +374,11 @@ export function rowsToEvents(rows: Record<string, unknown>[], mapping: Mapping) 
   if (!events.length) {
     throw new Error("No usable events were found. Check the case, activity, and timestamp mapping.");
   }
-  return events;
+  return deduplicateEvents(events);
 }
 
 export function analyze(events: EventRow[]) {
+  events = deduplicateEvents(events);
   const cases = new Map<string, EventRow[]>();
   for (const event of events) {
     const list = cases.get(event.caseId) || [];
@@ -494,12 +495,14 @@ export function analyze(events: EventRow[]) {
     resources: resources.entries().slice(0, 10).map(([name, count]) => ({ name, count })),
     transitions: transitions.entries().map(([key, count]) => {
       const [from, to] = key.split("|||");
+      const waits = transitionDurations.get(key) || [];
       return {
         from,
         to,
         count,
         caseCount: transitionCases.get(key)?.size || 0,
-        avgHours: average(transitionDurations.get(key) || []),
+        avgHours: average(waits),
+        durationBands: countDurationBands(waits),
       };
     }),
     bottlenecks,
@@ -516,8 +519,33 @@ export function analyze(events: EventRow[]) {
   };
 }
 
+/**
+ * Ignore exact duplicate source records while preserving genuine loops and
+ * repeated activities that occur at a different time or carry different data.
+ * Applying this during analysis also repairs counts for datasets imported
+ * before ingestion-level duplicate protection was added.
+ */
+export function deduplicateEvents(events: EventRow[]) {
+  const seen = new Set<string>();
+  return events.filter(event => {
+    const attributes = Object.entries(event.attrs)
+      .sort(([left], [right]) => left.localeCompare(right));
+    const fingerprint = JSON.stringify([
+      event.caseId,
+      event.activity,
+      event.timestamp,
+      event.resource,
+      event.cost,
+      attributes,
+    ]);
+    if (seen.has(fingerprint)) return false;
+    seen.add(fingerprint);
+    return true;
+  });
+}
+
 function analyzeTouchpointGroups(cases: Map<string, EventRow[]>) {
-  type TransitionAccumulator = { count: number; caseCount: number; totalHours: number };
+  type TransitionAccumulator = { count: number; caseCount: number; totalHours: number; waits: number[] };
   type GroupAccumulator = {
     caseCount: number;
     eventCount: number;
@@ -528,35 +556,38 @@ function analyzeTouchpointGroups(cases: Map<string, EventRow[]>) {
   const groups = new Map<number, GroupAccumulator>();
 
   for (const list of cases.values()) {
-    const touchpoints = list.length;
-    const group = groups.get(touchpoints) || {
+    if (list.length < 2) continue;
+    const secondTouchpoint = groups.get(2) || {
       caseCount: 0,
       eventCount: 0,
       wasteHours: 0,
       activities: new Map<string, number>(),
       transitions: new Map<string, TransitionAccumulator>(),
     };
-    group.caseCount += 1;
-    group.eventCount += list.length;
-    for (const event of list) group.activities.set(event.activity, (group.activities.get(event.activity) || 0) + 1);
-
-    const transitionsInCase = new Set<string>();
-    for (let index = 0; index < list.length - 1; index += 1) {
-      const left = list[index];
-      const right = list[index + 1];
-      const key = `${left.activity}|||${right.activity}`;
-      const transition = group.transitions.get(key) || { count: 0, caseCount: 0, totalHours: 0 };
-      const waitHours = hoursBetween(left.timestamp, right.timestamp);
-      transition.count += 1;
-      transition.totalHours += waitHours;
-      group.wasteHours += waitHours;
-      if (!transitionsInCase.has(key)) {
-        transition.caseCount += 1;
-        transitionsInCase.add(key);
-      }
-      group.transitions.set(key, transition);
+    secondTouchpoint.caseCount += 1;
+    secondTouchpoint.eventCount += 2;
+    for (const event of list.slice(0, 2)) {
+      secondTouchpoint.activities.set(event.activity, (secondTouchpoint.activities.get(event.activity) || 0) + 1);
     }
-    groups.set(touchpoints, group);
+    addTouchpointTransition(secondTouchpoint, list[0], list[1]);
+    groups.set(2, secondTouchpoint);
+
+    for (let index = 2; index < list.length; index += 1) {
+      const touchpoints = index + 1;
+      const event = list[index];
+      const group = groups.get(touchpoints) || {
+        caseCount: 0,
+        eventCount: 0,
+        wasteHours: 0,
+        activities: new Map<string, number>(),
+        transitions: new Map<string, TransitionAccumulator>(),
+      };
+      group.caseCount += 1;
+      group.eventCount += 1;
+      group.activities.set(event.activity, (group.activities.get(event.activity) || 0) + 1);
+      addTouchpointTransition(group, list[index - 1], event);
+      groups.set(touchpoints, group);
+    }
   }
 
   return [...groups.entries()].map(([touchpoints, group]) => ({
@@ -577,15 +608,33 @@ function analyzeTouchpointGroups(cases: Map<string, EventRow[]>) {
           count: value.count,
           caseCount: value.caseCount,
           avgHours: value.count ? value.totalHours / value.count : 0,
+          durationBands: countDurationBands(value.waits),
         };
       })
       .sort((left, right) => right.caseCount - left.caseCount || right.count - left.count),
   })).sort((left, right) => left.touchpoints - right.touchpoints);
 }
 
+function addTouchpointTransition(
+  group: { wasteHours: number; transitions: Map<string, { count: number; caseCount: number; totalHours: number; waits: number[] }> },
+  left: EventRow,
+  right: EventRow,
+) {
+  const key = `${left.activity}|||${right.activity}`;
+  const waitHours = hoursBetween(left.timestamp, right.timestamp);
+  const transition = group.transitions.get(key) || { count: 0, caseCount: 0, totalHours: 0, waits: [] };
+  transition.count += 1;
+  transition.caseCount += 1;
+  transition.totalHours += waitHours;
+  transition.waits.push(waitHours);
+  group.wasteHours += waitHours;
+  group.transitions.set(key, transition);
+}
+
 type CorrelationValue = string | number | null;
 
 function analyzeCorrelations(cases: Map<string, EventRow[]>, events: EventRow[]): CorrelationAnalysis {
+  const correlationSampleLimit = 5_000;
   const processVariables = new Set([
     "Cycle time (hours)",
     "Case event count",
@@ -624,14 +673,19 @@ function analyzeCorrelations(cases: Map<string, EventRow[]>, events: EventRow[])
     }
   }
 
-  const keys = Array.from(new Set(observations.flatMap(row => Object.keys(row))));
+  const correlationObservations = observations.length <= correlationSampleLimit
+    ? observations
+    : Array.from({ length: correlationSampleLimit }, (_, index) =>
+        observations[Math.floor(index * observations.length / correlationSampleLimit)],
+      );
+  const keys = Array.from(new Set(correlationObservations.flatMap(row => Object.keys(row))));
   const variables = keys.map((name): CorrelationAnalysis["variables"][number] | null => {
-    const rawValues = observations.map(row => row[name]).filter(isPresent);
-    if (rawValues.length < Math.min(5, observations.length)) return null;
+    const rawValues = correlationObservations.map(row => row[name]).filter(isPresent);
+    if (rawValues.length < Math.min(5, correlationObservations.length)) return null;
     const numericValues = rawValues.map(toCorrelationNumber).filter((value): value is number => value !== null);
     const numericRatio = numericValues.length / rawValues.length;
     const distinct = new Set(rawValues.map(value => String(value).trim().toLowerCase()));
-    const coverage = rawValues.length / Math.max(observations.length, 1);
+    const coverage = rawValues.length / Math.max(correlationObservations.length, 1);
     const idLike = /(?:^|[ _-])(?:id|number|no|key|reference)(?:$|[ _-])/i.test(name);
 
     if (numericRatio >= 0.8 && new Set(numericValues).size >= 2) {
@@ -652,7 +706,7 @@ function analyzeCorrelations(cases: Map<string, EventRow[]>, events: EventRow[])
     for (let rightIndex = leftIndex + 1; rightIndex < variables.length; rightIndex += 1) {
       const left = variables[leftIndex];
       const right = variables[rightIndex];
-      const pairs = observations
+      const pairs = correlationObservations
         .map(row => [row[left.name], row[right.name]] as const)
         .filter(([leftValue, rightValue]) => isPresent(leftValue) && isPresent(rightValue));
       if (pairs.length < 5) continue;
@@ -1095,6 +1149,17 @@ function waitBand(hours: number) {
   if (hours >= 72) return "High";
   if (hours >= 24) return "Medium";
   return "Low";
+}
+
+function countDurationBands(hours: number[]) {
+  const bands = { fast: 0, steady: 0, slow: 0, late: 0 };
+  for (const value of hours) {
+    if (value <= 24) bands.fast += 1;
+    else if (value <= 72) bands.steady += 1;
+    else if (value <= 168) bands.slow += 1;
+    else bands.late += 1;
+  }
+  return bands;
 }
 
 export function formatHours(hours: number) {

@@ -7,6 +7,7 @@ import ClaimsDiscovery from "@/components/ClaimsDiscovery";
 import ProcessDiscoveryPanel, { type TaskMiningAnalysis } from "@/components/ProcessDiscoveryPanel";
 import QuickBottleneckAnalysis from "@/components/QuickBottleneckAnalysis";
 import type { CorrelationAnalysis } from "@/lib/process-mining";
+import { postWorkbook } from "@/lib/client-file-upload";
 
 type Dataset = {
   id: string;
@@ -41,7 +42,7 @@ type Analysis = {
   reworkRate: number;
   totalCost: number;
   activities: { name: string; count: number }[];
-  transitions: { from: string; to: string; count: number; caseCount: number; avgHours: number }[];
+  transitions: ProcessTransition[];
   bottlenecks: {
     from: string;
     to: string;
@@ -69,9 +70,29 @@ type Analysis = {
     wasteHours: number;
     share: number;
     activities: { name: string; count: number }[];
-    transitions: { from: string; to: string; count: number; caseCount: number; avgHours: number }[];
+    transitions: ProcessTransition[];
   }[];
 };
+
+type DurationBands = { fast: number; steady: number; slow: number; late: number };
+type ProcessTransition = { from: string; to: string; count: number; caseCount: number; avgHours: number; durationBands?: DurationBands };
+
+function buildClaimTokenBands(transition: ProcessTransition, maxTransitionCount: number) {
+  const names = ["fast", "steady", "slow", "late"] as const;
+  const fallback = transition.avgHours <= 24 ? "fast" : transition.avgHours <= 72 ? "steady" : transition.avgHours <= 168 ? "slow" : "late";
+  const bands = transition.durationBands;
+  const total = bands ? names.reduce((sum, name) => sum + bands[name], 0) : 0;
+  if (!bands || !total) return [fallback, fallback];
+
+  const tokenCount = Math.max(2, Math.min(10, Math.ceil(transition.caseCount / Math.max(maxTransitionCount, 1) * 10)));
+  const tokens = names.filter(name => bands[name] > 0);
+  while (tokens.length < tokenCount) {
+    const quantile = (tokens.length + 0.5) / tokenCount * total;
+    let cumulative = 0;
+    tokens.push(names.find(name => (cumulative += bands[name]) >= quantile) || fallback);
+  }
+  return tokens.slice(0, tokenCount).sort((left, right) => names.indexOf(left) - names.indexOf(right));
+}
 
 type PathItem = {
   path: string[];
@@ -129,7 +150,7 @@ export default function ProcessMiningApp() {
     if (!detail && latest[0]?.id) await loadDataset(latest[0].id);
   }
 
-  async function loadDataset(id: string) {
+  async function loadDataset(id: string, openMap = false) {
     setBusy(true);
     setError("");
     try {
@@ -138,7 +159,7 @@ export default function ProcessMiningApp() {
       if (!response.ok) throw new Error(body.error || "Unable to load dataset.");
       setDetail(body);
       setSelectedId(id);
-      setTab("map");
+      if (openMap) setTab("map");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to load dataset.");
     } finally {
@@ -152,7 +173,7 @@ export default function ProcessMiningApp() {
     setBusy(true);
     const form = new FormData(event.currentTarget);
     try {
-      const response = await fetch("/api/uploads/preview", { method: "POST", body: form });
+      const response = await postWorkbook(form, "/api/uploads/preview");
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || "Upload failed.");
       setPreview(body);
@@ -179,7 +200,7 @@ export default function ProcessMiningApp() {
       if (!response.ok) throw new Error(body.error || "Unable to save dataset.");
       setPreview(null);
       await loadDatasets();
-      await loadDataset(body.datasetId);
+      await loadDataset(body.datasetId, true);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to save dataset.");
     } finally {
@@ -227,7 +248,7 @@ export default function ProcessMiningApp() {
                     <td><strong>{dataset.name}</strong><br /><span className="metric-label">{dataset.original_filename || "uploaded data"}</span></td>
                     <td>{dataset.case_count}</td>
                     <td>{dataset.event_count}</td>
-                    <td><button className="button secondary" onClick={() => void loadDataset(dataset.id)}>Open</button></td>
+                    <td><button className="button secondary" onClick={() => void loadDataset(dataset.id, true)}>Open</button></td>
                   </tr>
                 ))}
                 {!datasets.length && <tr><td colSpan={4}>No datasets yet.</td></tr>}
@@ -255,7 +276,10 @@ export default function ProcessMiningApp() {
                   <button key={id} className={tab === id ? "active" : ""} onClick={() => setTab(id)}>{label}<span>{countFor(id, detail.analysis)}</span></button>
                 ))}
               </aside>
-              <div>{renderTab(tab, detail.analysis)}</div>
+              <div>
+                {tab !== "quick-bottleneck" && renderTab(tab, detail.analysis)}
+                <div hidden={tab !== "quick-bottleneck"}><QuickBottleneckAnalysis /></div>
+              </div>
             </div>
           </section>
         )}
@@ -392,7 +416,6 @@ function renderTab(tab: string, analysis: Analysis) {
   if (tab === "objects") return <Objects analysis={analysis} />;
   if (tab === "process-discovery") return <ProcessDiscoveryPanel analysis={analysis} />;
   if (tab === "claims-discovery") return <ClaimsDiscovery analysis={analysis} />;
-  if (tab === "quick-bottleneck") return <QuickBottleneckAnalysis />;
   return <Actions />;
 }
 
@@ -423,7 +446,9 @@ function MapPanel({ analysis }: { analysis: Analysis }) {
   const openTransition = (signal: MapSignal) => { setSelectedSignalRaw(signal as never); setSelectedModal("transition"); };
   const closeTimeline = () => { setSelectedSignalRaw(null as never); setSelectedModal(null); };
   const touchpointGroups = analysis.touchpointGroups || [];
-  const defaultTouchpoints = touchpointGroups.find(group => group.touchpoints === 1)?.touchpoints ?? touchpointGroups[0]?.touchpoints ?? null;
+  const defaultTouchpoints = touchpointGroups.find(group => group.touchpoints === 2)?.touchpoints
+    ?? touchpointGroups[0]?.touchpoints
+    ?? null;
   const selectedThreshold = selectedTouchpoints ?? defaultTouchpoints;
   const selectedCohort = useMemo(
     () => selectedThreshold === null ? null : buildCumulativeTouchpointMap(touchpointGroups, selectedThreshold),
@@ -438,7 +463,10 @@ function MapPanel({ analysis }: { analysis: Analysis }) {
     setSelectedTouchpoints(touchpoints);
     closeTimeline();
   };
-  const visibleActivities = useMemo(() => map.activities.slice(0, 22), [map.activities]);
+  const visibleActivities = useMemo(
+    () => map.activities.filter(item => !isProcessTerminalActivity(item.name)).slice(0, 22),
+    [map.activities],
+  );
   const visibleNames = useMemo(() => new Set(visibleActivities.map(item => item.name)), [visibleActivities]);
   const totalEvents = Math.max(visibleActivities.reduce((sum, item) => sum + item.count, 0), 1);
   const maxActivityCount = Math.max(...visibleActivities.map(item => item.count), 1);
@@ -471,6 +499,59 @@ function MapPanel({ analysis }: { analysis: Analysis }) {
   }, [map.transitions, visibleNames]);
   const maxTransitionCount = Math.max(...topTransitions.map(item => item.caseCount), 1);
   const maxTransitionWait = Math.max(...topTransitions.map(item => item.avgHours), 1);
+  const terminalActivities = useMemo(() => {
+    const firstGroup = touchpointGroups.find(group => group.touchpoints === 2);
+    const boundaryGroup = touchpointGroups
+      .filter(group => selectedThreshold === null || group.touchpoints <= selectedThreshold)
+      .at(-1);
+    const rankNames = (names: string[]) => [...new Set(names)]
+      .map(name => visibleActivities.find(activity => activity.name === name))
+      .filter((activity): activity is (typeof visibleActivities)[number] => Boolean(activity))
+      .sort((left, right) => right.count - left.count)
+      .slice(0, 6);
+    const starts = rankNames(firstGroup?.transitions.flatMap(transition =>
+      isProcessStartActivity(transition.from) ? [transition.to] : [transition.from],
+    ).filter(name => !isProcessTerminalActivity(name)) || []);
+    const ends = rankNames(boundaryGroup?.transitions.flatMap(transition =>
+      isProcessEndActivity(transition.to) ? [transition.from] : [transition.to],
+    ).filter(name => !isProcessTerminalActivity(name)) || []);
+    return {
+      starts: starts.length ? starts : visibleActivities.slice(0, 1),
+      ends: ends.length ? ends : visibleActivities.slice(-1),
+    };
+  }, [selectedThreshold, touchpointGroups, visibleActivities]);
+  const journeySignals = useMemo(() => {
+    const transitionByKey = new Map(topTransitions.map(item => [`${item.from}\0${item.to}`, item]));
+    const backAndForthScores = new Map<string, number>();
+    for (const transition of topTransitions) {
+      if (transition.from === transition.to || !transitionByKey.has(`${transition.to}\0${transition.from}`)) continue;
+      backAndForthScores.set(transition.from, (backAndForthScores.get(transition.from) || 0) + transition.caseCount);
+      backAndForthScores.set(transition.to, (backAndForthScores.get(transition.to) || 0) + transition.caseCount);
+    }
+    const backAndForth = [...backAndForthScores.entries()].sort((left, right) => right[1] - left[1])[0];
+    const backAndForthPartner = backAndForth
+      ? [...new Set(topTransitions
+        .filter(item => item.from !== item.to && (item.from === backAndForth[0] || item.to === backAndForth[0]))
+        .filter(item => transitionByKey.has(`${item.to}\0${item.from}`))
+        .map(item => item.from === backAndForth[0] ? item.to : item.from))]
+        .map(partner => ({
+          name: partner,
+          count: (transitionByKey.get(`${backAndForth[0]}\0${partner}`)?.caseCount || 0)
+            + (transitionByKey.get(`${partner}\0${backAndForth[0]}`)?.caseCount || 0),
+        }))
+        .sort((left, right) => right.count - left.count)[0]
+      : undefined;
+    const loop = topTransitions
+      .filter(item => item.from === item.to)
+      .sort((left, right) => right.caseCount - left.caseCount)[0];
+    const slowest = [...topTransitions]
+      .filter(item => item.from !== item.to)
+      .sort((left, right) => right.avgHours - left.avgHours)[0];
+    const bottleneck = [...topTransitions]
+      .filter(item => item.from !== item.to)
+      .sort((left, right) => right.avgHours * right.caseCount - left.avgHours * left.caseCount)[0];
+    return { backAndForth, backAndForthPartner, loop, slowest, bottleneck };
+  }, [topTransitions]);
   const durationClass = (hours: number) => hours <= 24 ? "fast" : hours <= 72 ? "steady" : hours <= 168 ? "slow" : "late";
   const durationLabel = (hours: number) => hours <= 24 ? "Fast" : hours <= 72 ? "Steady" : hours <= 168 ? "Slow" : "Late";
   const motionDuration = (hours: number, durationClass?: string) => {
@@ -613,6 +694,31 @@ function MapPanel({ analysis }: { analysis: Analysis }) {
         <button type="button" onClick={() => changeZoom(0.12)} disabled={zoom >= 1.55}>+</button>
         <button type="button" onClick={fitMap}>Fit</button>
       </div>
+      <section className="journey-signal-strip" aria-label={`High-level journey signals through touchpoint ${selectedThreshold ?? "all"}`}>
+        <div className="journey-signal-heading"><span>Journey signals</span><b>Through TP {selectedThreshold ?? "all"}</b></div>
+        <div className="journey-signal-card rework">
+          <small>Back &amp; forth</small>
+          <strong title={journeySignals.backAndForth && journeySignals.backAndForthPartner ? `${journeySignals.backAndForth[0]} back and forth with ${journeySignals.backAndForthPartner.name}` : journeySignals.backAndForth?.[0]}>
+            {journeySignals.backAndForth && journeySignals.backAndForthPartner ? `${journeySignals.backAndForth[0]} ↔ ${journeySignals.backAndForthPartner.name}` : journeySignals.backAndForth?.[0] || "None detected"}
+          </strong>
+          <span>{journeySignals.backAndForthPartner ? `${journeySignals.backAndForthPartner.count.toLocaleString()} reciprocal movements` : "No two-way path"}</span>
+        </div>
+        <div className="journey-signal-card loop">
+          <small>Loop contributor</small>
+          <strong title={journeySignals.loop?.from}>{journeySignals.loop?.from || "None detected"}</strong>
+          <span>{journeySignals.loop ? `${journeySignals.loop.caseCount.toLocaleString()} looping claims` : "No self-loop"}</span>
+        </div>
+        <div className="journey-signal-card slow">
+          <small>Slowest handoff</small>
+          <strong title={journeySignals.slowest ? `${journeySignals.slowest.from} to ${journeySignals.slowest.to}` : undefined}>{journeySignals.slowest ? `${journeySignals.slowest.from} → ${journeySignals.slowest.to}` : "None detected"}</strong>
+          <span>{journeySignals.slowest ? formatHours(journeySignals.slowest.avgHours) : "No handoff"}</span>
+        </div>
+        <div className="journey-signal-card bottleneck">
+          <small>Top bottleneck</small>
+          <strong title={journeySignals.bottleneck ? `${journeySignals.bottleneck.from} to ${journeySignals.bottleneck.to}` : undefined}>{journeySignals.bottleneck ? `${journeySignals.bottleneck.from} → ${journeySignals.bottleneck.to}` : "None detected"}</strong>
+          <span>{journeySignals.bottleneck ? `${formatWasteDays(journeySignals.bottleneck.avgHours / 24 * journeySignals.bottleneck.caseCount)} impact` : "No impact"}</span>
+        </div>
+      </section>
     </div>
 
     <div className="timelinepi-map-grid timelinepi-map-grid-full touchpoint-map-layout">
@@ -642,18 +748,34 @@ function MapPanel({ analysis }: { analysis: Analysis }) {
               <text x={endX} y={baseline + 80}>End</text>
             </g>
 
-            {visibleActivities.slice(0, 6).map((item, index) => {
+            {terminalActivities.starts.map((item, index) => {
               const node = nodeByName.get(item.name)!;
               const y = baseline - 60 - index * 22;
+              const id = `timelinepi-start-path-${index}`;
               const path = `M ${startX + 14} ${baseline} C ${node.x * 0.35} ${y}, ${node.x * 0.72} ${y}, ${node.x - 76} ${node.y}`;
-              return <path key={`start-${item.name}`} className="timelinepi-edge terminal-edge" d={path} markerEnd="url(#timelinepi-arrow)" />;
+              const tokenCount = Math.max(1, Math.min(4, Math.ceil(item.count / maxActivityCount * 4)));
+              return <g key={`start-${item.name}`} className="timelinepi-terminal-flow">
+                <path id={id} className="timelinepi-edge terminal-edge" d={path} markerEnd="url(#timelinepi-arrow)" />
+                {Array.from({ length: tokenCount }, (_, tokenIndex) => <circle key={`${id}-${tokenIndex}`} className="timelinepi-token fast terminal-token" r="4.2" filter="url(#timelinepi-token-shadow)">
+                  <animateMotion dur="2.8s" repeatCount="indefinite" begin={`${-(2.8 / tokenCount) * tokenIndex}s`}><mpath href={`#${id}`} /></animateMotion>
+                  <title>{`Claim movement from Start to ${item.name}`}</title>
+                </circle>)}
+              </g>;
             })}
 
-            {visibleActivities.slice(-6).map((item, index) => {
+            {terminalActivities.ends.map((item, index) => {
               const node = nodeByName.get(item.name)!;
               const y = baseline + 96 + index * 18;
+              const id = `timelinepi-end-path-${index}`;
               const path = `M ${node.x + 76} ${node.y} C ${node.x + 180} ${y}, ${endX - 150} ${y}, ${endX - 14} ${baseline + 48}`;
-              return <path key={`end-${item.name}`} className="timelinepi-edge terminal-edge" d={path} markerEnd="url(#timelinepi-arrow)" />;
+              const tokenCount = Math.max(1, Math.min(4, Math.ceil(item.count / maxActivityCount * 4)));
+              return <g key={`end-${item.name}`} className="timelinepi-terminal-flow">
+                <path id={id} className="timelinepi-edge terminal-edge" d={path} markerEnd="url(#timelinepi-arrow)" />
+                {Array.from({ length: tokenCount }, (_, tokenIndex) => <circle key={`${id}-${tokenIndex}`} className="timelinepi-token fast terminal-token" r="4.2" filter="url(#timelinepi-token-shadow)">
+                  <animateMotion dur="2.8s" repeatCount="indefinite" begin={`${-(2.8 / tokenCount) * tokenIndex}s`}><mpath href={`#${id}`} /></animateMotion>
+                  <title>{`Claim movement from ${item.name} to End`}</title>
+                </circle>)}
+              </g>;
             })}
 
             {topTransitions.map((transition, index) => {
@@ -666,21 +788,20 @@ function MapPanel({ analysis }: { analysis: Analysis }) {
               const path = transitionPath(from, to, index, isSelfLoop);
               const strokeWidth = 0.45 + Math.sqrt(transition.caseCount / maxTransitionCount) * 2.6;
               const signal = makeMovementSignal(transition, isLoop);
+              const tokenBands = buildClaimTokenBands(transition, maxTransitionCount);
               return <g key={id} className={`timelinepi-edge-group ${isLoop ? "is-loop" : ""} ${isSelfLoop ? "is-self-loop" : ""} ${activeSignal?.id === signal.id ? "is-selected" : ""}`}>
                 <path id={id} className="timelinepi-edge" d={path} strokeWidth={strokeWidth} markerEnd={`url(#${isLoop ? "timelinepi-loop-arrow" : "timelinepi-arrow"})`} />
                 <path className="timelinepi-edge-hit" d={path} onClick={() => openTransition(signal)} />
                 <text className="timelinepi-edge-count"><textPath href={`#${id}`} startOffset="50%">{transition.caseCount.toLocaleString()}</textPath></text>
-                <circle className={`timelinepi-token ${signal.tone} speed-${signal.durationClass}`} r={isSelfLoop ? 5.8 : isLoop ? 5 : 4.2} filter="url(#timelinepi-token-shadow)" onClick={event => { event.stopPropagation(); openTimeline(signal); }}>
-                  <animateMotion dur={`${motionDuration(transition.avgHours, signal.durationClass)}s`} repeatCount="indefinite" rotate="auto" begin={`${(index % 10) * 0.28}s`}>
-                    <mpath href={`#${id}`} />
-                  </animateMotion>
-                  <title>{signal.title}</title>
-                </circle>
-                <circle className="timelinepi-token-hit" r="14" onClick={event => { event.stopPropagation(); openTimeline(signal); }}>
-                  <animateMotion dur={`${motionDuration(transition.avgHours, signal.durationClass)}s`} repeatCount="indefinite" rotate="auto" begin={`${(index % 10) * 0.28}s`}>
-                    <mpath href={`#${id}`} />
-                  </animateMotion>
-                </circle>
+                {tokenBands.map((band, tokenIndex) => {
+                  const tokenDuration = Number(motionDuration(transition.avgHours, band));
+                  return <circle key={`${id}-token-${tokenIndex}`} className={`timelinepi-token ${band} speed-${band}`} r={isSelfLoop ? 5.8 : isLoop ? 5 : 4.2} filter="url(#timelinepi-token-shadow)" onClick={event => { event.stopPropagation(); openTimeline(signal); }}>
+                    <animateMotion dur={`${tokenDuration}s`} repeatCount="indefinite" rotate="auto" begin={`${-(tokenDuration / tokenBands.length) * tokenIndex}s`}>
+                      <mpath href={`#${id}`} />
+                    </animateMotion>
+                    <title>{`${signal.title} · ${band} claim-flow sample`}</title>
+                  </circle>;
+                })}
               </g>;
             })}
 
@@ -812,21 +933,22 @@ function TouchpointExplorer({
   onSelect: (touchpoints: number) => void;
 }) {
   if (!groups.length) return <aside className="touchpoint-explorer"><div className="touchpoint-empty">No touchpoint groups are available.</div></aside>;
-  const defaultIndex = Math.max(0, groups.findIndex(row => row.touchpoints === 1));
+  const defaultIndex = groups.length - 1;
   const selectedIndex = Math.max(0, groups.findIndex(row => row.touchpoints === selectedTouchpoints));
   const selected = groups[selectedIndex] || groups[0];
   const included = groups.slice(0, selectedIndex + 1);
-  const includedCases = included.reduce((sum, group) => sum + group.caseCount, 0);
+  const includedCases = groups[0]?.caseCount ?? 0;
   const includedShare = totalCases ? includedCases / totalCases * 100 : 0;
   const includedWasteDays = included.reduce((sum, group) => sum + group.wasteHours, 0) / 24;
   const averageWasteDays = includedCases ? includedWasteDays / includedCases : 0;
   const maxCount = Math.max(...groups.map(row => row.caseCount), 1);
+  const uniformJourney = groups.every(row => row.caseCount === groups[0].caseCount);
   const linePosition = `${(selectedIndex + 1) / groups.length * 100}%`;
 
-  return <aside className="touchpoint-explorer" aria-label="Claims grouped by touchpoint count">
+  return <aside className="touchpoint-explorer" aria-label="Process map journey depth by touchpoint">
     <header>
-      <div><span>Case segmentation</span><strong>Claims by touchpoints</strong></div>
-      <button type="button" onClick={() => onSelect(groups[defaultIndex].touchpoints)} disabled={selectedIndex === defaultIndex}>Reset to 1</button>
+      <div><span>Journey depth</span><strong>Touchpoints in process</strong></div>
+      <button type="button" onClick={() => onSelect(groups[defaultIndex].touchpoints)} disabled={selectedIndex === defaultIndex}>Show all</button>
     </header>
     <div className="touchpoint-selection-summary">
       <div><b>{groups[0].touchpoints}–{selected.touchpoints} touchpoint{selected.touchpoints === 1 ? "" : "s"}</b><span>{includedCases.toLocaleString()} claims · {includedShare.toFixed(1)}%</span></div>
@@ -836,7 +958,7 @@ function TouchpointExplorer({
       <span className="touchpoint-threshold-line" aria-hidden="true" />
       <div className="touchpoint-slider-column">
         <input
-          aria-label="Include claims up to this touchpoint count"
+          aria-label="Show process through this touchpoint"
           type="range"
           min="0"
           max={Math.max(groups.length - 1, 0)}
@@ -866,27 +988,27 @@ function TouchpointExplorer({
         })}
       </div>
     </div>
-    <footer><span>Waste = elapsed time between consecutive recorded events</span><b>Drag the line down to accumulate groups; drag it up to remove them.</b></footer>
+    <footer><span>{uniformJourney ? `All ${groups[0].caseCount.toLocaleString()} claims reach every uploaded touchpoint.` : "Waste = elapsed time between consecutive recorded events"}</span><b>Select a depth to redraw the process through that touchpoint.</b></footer>
   </aside>;
 }
 
 function buildCumulativeTouchpointMap(groups: Analysis["touchpointGroups"], threshold: number) {
   const included = groups.filter(group => group.touchpoints <= threshold);
   const activities = new Map<string, number>();
-  const transitions = new Map<string, { from: string; to: string; count: number; caseCount: number; weightedHours: number }>();
-  let caseCount = 0;
+  const transitions = new Map<string, { from: string; to: string; count: number; caseCount: number; weightedHours: number; durationBands: DurationBands }>();
+  const caseCount = included[0]?.caseCount ?? 0;
   let wasteHours = 0;
 
   for (const group of included) {
-    caseCount += group.caseCount;
     wasteHours += group.wasteHours;
     for (const activity of group.activities) activities.set(activity.name, (activities.get(activity.name) || 0) + activity.count);
     for (const transition of group.transitions) {
       const key = `${transition.from}\0${transition.to}`;
-      const current = transitions.get(key) || { from: transition.from, to: transition.to, count: 0, caseCount: 0, weightedHours: 0 };
+      const current = transitions.get(key) || { from: transition.from, to: transition.to, count: 0, caseCount: 0, weightedHours: 0, durationBands: { fast: 0, steady: 0, slow: 0, late: 0 } };
       current.count += transition.count;
       current.caseCount += transition.caseCount;
       current.weightedHours += transition.avgHours * transition.count;
+      for (const band of ["fast", "steady", "slow", "late"] as const) current.durationBands[band] += transition.durationBands?.[band] || 0;
       transitions.set(key, current);
     }
   }
@@ -901,6 +1023,7 @@ function buildCumulativeTouchpointMap(groups: Analysis["touchpointGroups"], thre
       count: transition.count,
       caseCount: transition.caseCount,
       avgHours: transition.count ? transition.weightedHours / transition.count : 0,
+      durationBands: transition.durationBands,
     })).sort((left, right) => right.caseCount - left.caseCount || right.count - left.count),
   };
 }
@@ -1161,6 +1284,18 @@ function buildBreadthfirstMapLayout(
   }
 
   return { width, height, baseline, nodeByName };
+}
+
+function isProcessStartActivity(name: string) {
+  return /^(?:start|process start|claim start|started)$/i.test(name.trim());
+}
+
+function isProcessEndActivity(name: string) {
+  return /^(?:end|process end|claim end|ended)$/i.test(name.trim());
+}
+
+function isProcessTerminalActivity(name: string) {
+  return isProcessStartActivity(name) || isProcessEndActivity(name);
 }
 
 function Bottlenecks({ analysis }: { analysis: Analysis }) {
