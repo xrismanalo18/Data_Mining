@@ -5,6 +5,7 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import DeepDiveSolution, { type ClaimsAnalysis } from "@/components/DeepDiveSolution";
 import ClaimsDiscovery from "@/components/ClaimsDiscovery";
 import ProcessDiscoveryPanel, { type TaskMiningAnalysis } from "@/components/ProcessDiscoveryPanel";
+import { DISCOVERY_FLOW } from "@/lib/discovery-flow-static";
 import QuickBottleneckAnalysis from "@/components/QuickBottleneckAnalysis";
 import type { CorrelationAnalysis } from "@/lib/process-mining";
 import { postWorkbook } from "@/lib/client-file-upload";
@@ -414,7 +415,7 @@ function renderTab(tab: string, analysis: Analysis) {
   if (tab === "queues") return <Queues analysis={analysis} />;
   if (tab === "recommendations") return <Recommendations analysis={analysis} />;
   if (tab === "objects") return <Objects analysis={analysis} />;
-  if (tab === "process-discovery") return <ProcessDiscoveryPanel analysis={analysis} />;
+  if (tab === "process-discovery") return <ProcessDiscoveryPanel />;
   if (tab === "claims-discovery") return <ClaimsDiscovery analysis={analysis} />;
   return <Actions />;
 }
@@ -1783,7 +1784,7 @@ function countFor(tab: string, analysis: Analysis) {
   if (tab === "queues") return analysis.activities.length;
   if (tab === "recommendations") return analysis.recommendations.length;
   if (tab === "objects") return analysis.objects.length;
-  if (tab === "process-discovery") return analysis.taskMining?.steps.length ?? analysis.activities.length;
+  if (tab === "process-discovery") return DISCOVERY_FLOW.steps.length;
   if (tab === "claims-discovery") return analysis.correlations.relationships.length;
   if (tab === "quick-bottleneck") return "NEW";
   return 0;
