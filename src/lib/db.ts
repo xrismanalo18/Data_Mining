@@ -5,17 +5,25 @@ const { Pool } = pg;
 let pool: pg.Pool | null = null;
 let initialized = false;
 
+function getDatabaseConnectionEntry() {
+  const candidates = [
+    // Keep the app-owned override ahead of provider-managed variables, which
+    // may retain stale credentials after a Supabase database password reset.
+    ["PROCESS_MINING_DATABASE_URL", process.env.PROCESS_MINING_DATABASE_URL],
+    ["POSTGRES_URL", process.env.POSTGRES_URL],
+    ["POSTGRES_PRISMA_URL", process.env.POSTGRES_PRISMA_URL],
+    ["DATABASE_URL", process.env.DATABASE_URL],
+    ["SUPABASE_POSTGRES_URL", process.env.SUPABASE_POSTGRES_URL],
+    ["SUPABASE_DATABASE_URL", process.env.SUPABASE_DATABASE_URL],
+    ["SUPABASE_DB_URL", process.env.SUPABASE_DB_URL],
+    ["POSTGRES_URL_NON_POOLING", process.env.POSTGRES_URL_NON_POOLING],
+  ] as const;
+
+  return candidates.find(([, value]) => value?.trim()) || (["", ""] as const);
+}
+
 function getDatabaseConnectionString() {
-  return (
-    process.env.POSTGRES_URL ||
-    process.env.DATABASE_URL ||
-    process.env.SUPABASE_POSTGRES_URL ||
-    process.env.SUPABASE_DATABASE_URL ||
-    process.env.SUPABASE_DB_URL ||
-    process.env.POSTGRES_PRISMA_URL ||
-    process.env.POSTGRES_URL_NON_POOLING ||
-    ""
-  ).trim();
+  return getDatabaseConnectionEntry()[1]?.trim() || "";
 }
 
 function getSupabaseProjectHint() {
@@ -48,7 +56,7 @@ export function getPool() {
   const connectionString = getDatabaseConnectionString();
   if (!connectionString) {
     throw new Error(
-      "Database connection is not configured. Set POSTGRES_URL to your Supabase pooled Postgres URI, or expose a compatible database URL such as DATABASE_URL, SUPABASE_POSTGRES_URL, SUPABASE_DATABASE_URL, SUPABASE_DB_URL, POSTGRES_PRISMA_URL, or POSTGRES_URL_NON_POOLING. " +
+      "Database connection is not configured. Set PROCESS_MINING_DATABASE_URL or POSTGRES_URL to your Supabase pooled Postgres URI, or expose a compatible database URL such as DATABASE_URL, SUPABASE_POSTGRES_URL, SUPABASE_DATABASE_URL, SUPABASE_DB_URL, POSTGRES_PRISMA_URL, or POSTGRES_URL_NON_POOLING. " +
         "NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY are public client settings and cannot save uploads by themselves." +
         getSupabaseProjectHint(),
     );

@@ -3,8 +3,12 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import DeepDiveSolution, { type ClaimsAnalysis } from "@/components/DeepDiveSolution";
+import ClaimsDiscovery from "@/components/ClaimsDiscovery";
 import ProcessDiscoveryPanel, { type TaskMiningAnalysis } from "@/components/ProcessDiscoveryPanel";
 import { DISCOVERY_FLOW } from "@/lib/discovery-flow-static";
+import QuickBottleneckAnalysis from "@/components/QuickBottleneckAnalysis";
+import type { CorrelationAnalysis } from "@/lib/process-mining";
+import { postWorkbook } from "@/lib/client-file-upload";
 
 type Dataset = {
   id: string;
@@ -19,6 +23,8 @@ type Preview = {
   uploadId: string;
   name: string;
   filename: string;
+  sheetName?: string;
+  headerRow?: number;
   rowCount: number;
   headers: string[];
   detectedMapping: Record<string, string>;
@@ -37,7 +43,7 @@ type Analysis = {
   reworkRate: number;
   totalCost: number;
   activities: { name: string; count: number }[];
-  transitions: { from: string; to: string; count: number; caseCount: number; avgHours: number }[];
+  transitions: ProcessTransition[];
   bottlenecks: {
     from: string;
     to: string;
@@ -57,7 +63,37 @@ type Analysis = {
   recommendations: { severity: string; title: string; detail: string }[];
   claims: ClaimsAnalysis;
   taskMining?: TaskMiningAnalysis;
+  correlations: CorrelationAnalysis;
+  touchpointGroups: {
+    touchpoints: number;
+    caseCount: number;
+    eventCount: number;
+    wasteHours: number;
+    share: number;
+    activities: { name: string; count: number }[];
+    transitions: ProcessTransition[];
+  }[];
 };
+
+type DurationBands = { fast: number; steady: number; slow: number; late: number };
+type ProcessTransition = { from: string; to: string; count: number; caseCount: number; avgHours: number; durationBands?: DurationBands };
+
+function buildClaimTokenBands(transition: ProcessTransition, maxTransitionCount: number) {
+  const names = ["fast", "steady", "slow", "late"] as const;
+  const fallback = transition.avgHours <= 24 ? "fast" : transition.avgHours <= 72 ? "steady" : transition.avgHours <= 168 ? "slow" : "late";
+  const bands = transition.durationBands;
+  const total = bands ? names.reduce((sum, name) => sum + bands[name], 0) : 0;
+  if (!bands || !total) return [fallback, fallback];
+
+  const tokenCount = Math.max(2, Math.min(10, Math.ceil(transition.caseCount / Math.max(maxTransitionCount, 1) * 10)));
+  const tokens = names.filter(name => bands[name] > 0);
+  while (tokens.length < tokenCount) {
+    const quantile = (tokens.length + 0.5) / tokenCount * total;
+    let cumulative = 0;
+    tokens.push(names.find(name => (cumulative += bands[name]) >= quantile) || fallback);
+  }
+  return tokens.slice(0, tokenCount).sort((left, right) => names.indexOf(left) - names.indexOf(right));
+}
 
 type PathItem = {
   path: string[];
@@ -85,6 +121,8 @@ const tabs = [
   ["objects", "Objects"],
   ["actions", "Actions"],
   ["process-discovery", "Process Discovery"],
+  ["claims-discovery", "Correlation Analysis"],
+  ["quick-bottleneck", "Quick Bottleneck Analysis"],
 ] as const;
 
 export default function ProcessMiningApp() {
@@ -113,7 +151,7 @@ export default function ProcessMiningApp() {
     if (!detail && latest[0]?.id) await loadDataset(latest[0].id);
   }
 
-  async function loadDataset(id: string) {
+  async function loadDataset(id: string, openMap = false) {
     setBusy(true);
     setError("");
     try {
@@ -122,7 +160,7 @@ export default function ProcessMiningApp() {
       if (!response.ok) throw new Error(body.error || "Unable to load dataset.");
       setDetail(body);
       setSelectedId(id);
-      setTab("map");
+      if (openMap) setTab("map");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to load dataset.");
     } finally {
@@ -136,7 +174,7 @@ export default function ProcessMiningApp() {
     setBusy(true);
     const form = new FormData(event.currentTarget);
     try {
-      const response = await fetch("/api/uploads/preview", { method: "POST", body: form });
+      const response = await postWorkbook(form, "/api/uploads/preview");
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || "Upload failed.");
       setPreview(body);
@@ -163,7 +201,7 @@ export default function ProcessMiningApp() {
       if (!response.ok) throw new Error(body.error || "Unable to save dataset.");
       setPreview(null);
       await loadDatasets();
-      await loadDataset(body.datasetId);
+      await loadDataset(body.datasetId, true);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to save dataset.");
     } finally {
@@ -211,7 +249,7 @@ export default function ProcessMiningApp() {
                     <td><strong>{dataset.name}</strong><br /><span className="metric-label">{dataset.original_filename || "uploaded data"}</span></td>
                     <td>{dataset.case_count}</td>
                     <td>{dataset.event_count}</td>
-                    <td><button className="button secondary" onClick={() => void loadDataset(dataset.id)}>Open</button></td>
+                    <td><button className="button secondary" onClick={() => void loadDataset(dataset.id, true)}>Open</button></td>
                   </tr>
                 ))}
                 {!datasets.length && <tr><td colSpan={4}>No datasets yet.</td></tr>}
@@ -239,7 +277,10 @@ export default function ProcessMiningApp() {
                   <button key={id} className={tab === id ? "active" : ""} onClick={() => setTab(id)}>{label}<span>{countFor(id, detail.analysis)}</span></button>
                 ))}
               </aside>
-              <div>{renderTab(tab, detail.analysis)}</div>
+              <div>
+                {tab !== "quick-bottleneck" && renderTab(tab, detail.analysis)}
+                <div hidden={tab !== "quick-bottleneck"}><QuickBottleneckAnalysis /></div>
+              </div>
             </div>
           </section>
         )}
@@ -261,6 +302,12 @@ function MappingPreview({
   onConfirm: () => void;
   busy: boolean;
 }) {
+  const missingRequired = [
+    ["case_id", "Case ID"],
+    ["activity", "Activity"],
+    ["timestamp", "Timestamp"],
+  ].filter(([key]) => !mapping[key]);
+
   function update(key: string, value: string) {
     setMapping({ ...mapping, [key]: value });
   }
@@ -272,7 +319,15 @@ function MappingPreview({
       <div className="summary-row">
         <span>File: <strong>{preview.filename}</strong></span>
         <span>Rows: <strong>{preview.rowCount.toLocaleString()}</strong></span>
+        {preview.sheetName && <span>Sheet: <strong>{preview.sheetName}</strong>{preview.headerRow ? ` · header row ${preview.headerRow}` : ""}</span>}
       </div>
+      {!missingRequired.length ? (
+        <div className="notice">Required fields were inferred from this file. Review the selections before running the analysis.</div>
+      ) : (
+        <div className="notice error">
+          Select {missingRequired.map(([, label]) => label).join(", ")} from the columns below. The file does not contain a confident automatic match.
+        </div>
+      )}
       <div className="grid cols">
         <div>
           <Select label="Case ID" value={mapping.case_id || ""} headers={preview.headers} onChange={value => update("case_id", value)} />
@@ -282,7 +337,7 @@ function MappingPreview({
         <div>
           <Select label="Resource / User" value={mapping.resource || ""} headers={preview.headers} onChange={value => update("resource", value)} optional />
           <Select label="Cost / Amount" value={mapping.cost || ""} headers={preview.headers} onChange={value => update("cost", value)} optional />
-          <div className="form-actions"><button className="button" onClick={onConfirm} disabled={busy}>{busy ? "Saving..." : "Run Analysis"}</button></div>
+          <div className="form-actions"><button className="button" onClick={onConfirm} disabled={busy || Boolean(missingRequired.length)}>{busy ? "Saving..." : "Run Analysis"}</button></div>
         </div>
       </div>
       <h3 className="subsection-title">Data Preview</h3>
@@ -361,6 +416,7 @@ function renderTab(tab: string, analysis: Analysis) {
   if (tab === "recommendations") return <Recommendations analysis={analysis} />;
   if (tab === "objects") return <Objects analysis={analysis} />;
   if (tab === "process-discovery") return <ProcessDiscoveryPanel />;
+  if (tab === "claims-discovery") return <ClaimsDiscovery analysis={analysis} />;
   return <Actions />;
 }
 
@@ -383,45 +439,143 @@ type MapSignal = {
 function MapPanel({ analysis }: { analysis: Analysis }) {
   const [zoom, setZoom] = useState(0.72);
   const [playing, setPlaying] = useState(true);
+  const [selectedTouchpoints, setSelectedTouchpoints] = useState<number | null>(null);
   const [selectedSignalRaw, setSelectedSignalRaw] = useState(null);
   const [selectedModal, setSelectedModal] = useState<"timeline" | "transition" | null>(null);
+  const mapShellRef = useRef<HTMLDivElement>(null);
   const openTimeline = (signal: MapSignal) => { setSelectedSignalRaw(signal as never); setSelectedModal("timeline"); };
   const openTransition = (signal: MapSignal) => { setSelectedSignalRaw(signal as never); setSelectedModal("transition"); };
   const closeTimeline = () => { setSelectedSignalRaw(null as never); setSelectedModal(null); };
-  const map = useMemo(() => ({ caseCount: analysis.caseCount, activities: analysis.activities, transitions: analysis.transitions }), [analysis]);
-  const visibleActivities = useMemo(() => map.activities.slice(0, 22), [map.activities]);
+  const touchpointGroups = analysis.touchpointGroups || [];
+  const defaultTouchpoints = touchpointGroups.find(group => group.touchpoints === 2)?.touchpoints
+    ?? touchpointGroups[0]?.touchpoints
+    ?? null;
+  const selectedThreshold = selectedTouchpoints ?? defaultTouchpoints;
+  const selectedCohort = useMemo(
+    () => selectedThreshold === null ? null : buildCumulativeTouchpointMap(touchpointGroups, selectedThreshold),
+    [selectedThreshold, touchpointGroups],
+  );
+  const map = useMemo(() => selectedCohort
+    ? { caseCount: selectedCohort.caseCount, activities: selectedCohort.activities, transitions: selectedCohort.transitions }
+    : { caseCount: analysis.caseCount, activities: analysis.activities, transitions: analysis.transitions },
+  [analysis.activities, analysis.caseCount, analysis.transitions, selectedCohort]);
+  useEffect(() => { setSelectedTouchpoints(defaultTouchpoints); closeTimeline(); }, [analysis.touchpointGroups, defaultTouchpoints]);
+  const selectTouchpoints = (touchpoints: number) => {
+    setSelectedTouchpoints(touchpoints);
+    closeTimeline();
+  };
+  const visibleActivities = useMemo(
+    () => map.activities.filter(item => !isProcessTerminalActivity(item.name)).slice(0, 22),
+    [map.activities],
+  );
   const visibleNames = useMemo(() => new Set(visibleActivities.map(item => item.name)), [visibleActivities]);
   const totalEvents = Math.max(visibleActivities.reduce((sum, item) => sum + item.count, 0), 1);
   const maxActivityCount = Math.max(...visibleActivities.map(item => item.count), 1);
-  const topTransitions = useMemo(() => map.transitions
-    .filter(item => visibleNames.has(item.from) && visibleNames.has(item.to))
-    .sort((left, right) => right.caseCount - left.caseCount)
-    .slice(0, 48), [map.transitions, visibleNames]);
+  const topTransitions = useMemo(() => {
+    const eligible = map.transitions
+      .filter(item => visibleNames.has(item.from) && visibleNames.has(item.to))
+      .sort((left, right) => right.caseCount - left.caseCount);
+    const outgoing = new Map<string, string[]>();
+    for (const item of eligible) outgoing.set(item.from, [...(outgoing.get(item.from) || []), item.to]);
+    const closesCycle = (from: string, to: string) => {
+      if (from === to) return true;
+      const pending = [to];
+      const visited = new Set<string>();
+      while (pending.length) {
+        const current = pending.pop()!;
+        if (current === from) return true;
+        if (visited.has(current)) continue;
+        visited.add(current);
+        pending.push(...(outgoing.get(current) || []));
+      }
+      return false;
+    };
+    const loops = eligible.filter(item => closesCycle(item.from, item.to));
+    const selected = new Map(loops.map(item => [`${item.from}\u0000${item.to}`, item]));
+    for (const item of eligible) {
+      if (selected.size >= 48 && !selected.has(`${item.from}\u0000${item.to}`)) break;
+      selected.set(`${item.from}\u0000${item.to}`, item);
+    }
+    return [...selected.values()];
+  }, [map.transitions, visibleNames]);
   const maxTransitionCount = Math.max(...topTransitions.map(item => item.caseCount), 1);
   const maxTransitionWait = Math.max(...topTransitions.map(item => item.avgHours), 1);
+  const terminalActivities = useMemo(() => {
+    const firstGroup = touchpointGroups.find(group => group.touchpoints === 2);
+    const boundaryGroup = touchpointGroups
+      .filter(group => selectedThreshold === null || group.touchpoints <= selectedThreshold)
+      .at(-1);
+    const rankNames = (names: string[]) => [...new Set(names)]
+      .map(name => visibleActivities.find(activity => activity.name === name))
+      .filter((activity): activity is (typeof visibleActivities)[number] => Boolean(activity))
+      .sort((left, right) => right.count - left.count)
+      .slice(0, 6);
+    const starts = rankNames(firstGroup?.transitions.flatMap(transition =>
+      isProcessStartActivity(transition.from) ? [transition.to] : [transition.from],
+    ).filter(name => !isProcessTerminalActivity(name)) || []);
+    const ends = rankNames(boundaryGroup?.transitions.flatMap(transition =>
+      isProcessEndActivity(transition.to) ? [transition.from] : [transition.to],
+    ).filter(name => !isProcessTerminalActivity(name)) || []);
+    return {
+      starts: starts.length ? starts : visibleActivities.slice(0, 1),
+      ends: ends.length ? ends : visibleActivities.slice(-1),
+    };
+  }, [selectedThreshold, touchpointGroups, visibleActivities]);
+  const journeySignals = useMemo(() => {
+    const transitionByKey = new Map(topTransitions.map(item => [`${item.from}\0${item.to}`, item]));
+    const backAndForthScores = new Map<string, number>();
+    for (const transition of topTransitions) {
+      if (transition.from === transition.to || !transitionByKey.has(`${transition.to}\0${transition.from}`)) continue;
+      backAndForthScores.set(transition.from, (backAndForthScores.get(transition.from) || 0) + transition.caseCount);
+      backAndForthScores.set(transition.to, (backAndForthScores.get(transition.to) || 0) + transition.caseCount);
+    }
+    const backAndForth = [...backAndForthScores.entries()].sort((left, right) => right[1] - left[1])[0];
+    const backAndForthPartner = backAndForth
+      ? [...new Set(topTransitions
+        .filter(item => item.from !== item.to && (item.from === backAndForth[0] || item.to === backAndForth[0]))
+        .filter(item => transitionByKey.has(`${item.to}\0${item.from}`))
+        .map(item => item.from === backAndForth[0] ? item.to : item.from))]
+        .map(partner => ({
+          name: partner,
+          count: (transitionByKey.get(`${backAndForth[0]}\0${partner}`)?.caseCount || 0)
+            + (transitionByKey.get(`${partner}\0${backAndForth[0]}`)?.caseCount || 0),
+        }))
+        .sort((left, right) => right.count - left.count)[0]
+      : undefined;
+    const loop = topTransitions
+      .filter(item => item.from === item.to)
+      .sort((left, right) => right.caseCount - left.caseCount)[0];
+    const slowest = [...topTransitions]
+      .filter(item => item.from !== item.to)
+      .sort((left, right) => right.avgHours - left.avgHours)[0];
+    const bottleneck = [...topTransitions]
+      .filter(item => item.from !== item.to)
+      .sort((left, right) => right.avgHours * right.caseCount - left.avgHours * left.caseCount)[0];
+    return { backAndForth, backAndForthPartner, loop, slowest, bottleneck };
+  }, [topTransitions]);
   const durationClass = (hours: number) => hours <= 24 ? "fast" : hours <= 72 ? "steady" : hours <= 168 ? "slow" : "late";
   const durationLabel = (hours: number) => hours <= 24 ? "Fast" : hours <= 72 ? "Steady" : hours <= 168 ? "Slow" : "Late";
   const motionDuration = (hours: number, durationClass?: string) => {
     const normalized = Math.min(1, Math.max(0, hours / Math.max(maxTransitionWait, 1)));
-    const base = 0.75 + normalized * 5.4;
-    const multiplier = durationClass === "late" ? 4.8 : durationClass === "slow" ? 1.75 : durationClass === "steady" ? 1.15 : 0.72;
-    return (base * multiplier).toFixed(1);
+    if (durationClass === "late") return (15 + normalized * 10).toFixed(1);
+    if (durationClass === "slow") return (8 + normalized * 6).toFixed(1);
+    if (durationClass === "steady") return (3.8 + normalized * 3).toFixed(1);
+    return (.65 + normalized * 1.2).toFixed(1);
   };
-  const changeZoom = (amount: number) => setZoom(current => Number(Math.min(1.55, Math.max(0.45, current + amount)).toFixed(2)));
+  const changeZoom = (amount: number) => setZoom(current => Number(Math.min(1.55, Math.max(0.25, current + amount)).toFixed(2)));
   const compactCount = (count: number) => count >= 1000 ? `${(count / 1000).toFixed(count >= 10000 ? 0 : 1)}K` : count.toLocaleString();
 
-  const width = 2200;
-  const height = 780;
-  const startX = 36;
-  const endX = 2164;
-  const baseline = 360;
-  const nodeByName = new Map(visibleActivities.map((activity, index) => {
-    const usableWidth = width - 160;
-    const x = visibleActivities.length <= 1 ? width / 2 : 76 + (usableWidth / Math.max(1, visibleActivities.length - 1)) * index;
-    const yOffsets = [0, -42, 42, -88, 88, -132, 132];
-    const y = baseline + yOffsets[index % yOffsets.length];
-    return [activity.name, { ...activity, index, x, y }];
-  }));
+  const layout = useMemo(() => buildBreadthfirstMapLayout(visibleActivities, topTransitions), [visibleActivities, topTransitions]);
+  const { width, height, baseline, nodeByName } = layout;
+  const startX = 48;
+  const endX = width - 48;
+  const fitMap = () => {
+    const shell = mapShellRef.current;
+    if (!shell) return setZoom(0.72);
+    const fitted = Math.min((shell.clientWidth - 24) / width, (shell.clientHeight - 24) / height, 1);
+    setZoom(Number(Math.max(0.25, fitted).toFixed(2)));
+    shell.scrollTo({ left: 0, top: 0, behavior: "smooth" });
+  };
 
   const makeQueueSignal = (activity: { name: string; count: number; x: number; y: number }): MapSignal => {
     const share = activity.count / totalEvents * 100;
@@ -500,38 +654,83 @@ function MapPanel({ analysis }: { analysis: Analysis }) {
   ] : [];
 
   const transitionPath = (from: { x: number; y: number; index: number }, to: { x: number; y: number; index: number }, order: number, isLoop: boolean) => {
+    const clampY = (value: number) => Math.max(64, Math.min(height - 82, value));
     if (isLoop && from.index === to.index) {
       const side = order % 2 === 0 ? 1 : -1;
-      const loopWidth = 68 + (order % 4) * 16;
-      const loopHeight = 22 + (order % 3) * 8;
-      const anchorX = from.x + side * 58;
-      return `M ${anchorX} ${from.y - 7} C ${anchorX + side * loopWidth} ${from.y - loopHeight}, ${anchorX + side * loopWidth} ${from.y + loopHeight}, ${anchorX} ${from.y + 7}`;
+      const loopWidth = 96 + (order % 4) * 22;
+      const loopHeight = 58 + (order % 3) * 20;
+      const anchorX = from.x + side * 70;
+      const upperY = clampY(from.y - loopHeight);
+      const lowerY = clampY(from.y + loopHeight);
+      return `M ${anchorX} ${from.y - 12} C ${anchorX + side * loopWidth} ${upperY}, ${anchorX + side * loopWidth} ${lowerY}, ${anchorX} ${from.y + 12}`;
     }
     const direction = to.index >= from.index ? 1 : -1;
-    const loopLane = direction < 0 ? 86 + (order % 8) * 23 : 28 + (order % 5) * 10;
-    const vertical = direction < 0 ? loopLane * (order % 2 === 0 ? -1 : 1) : (to.y - from.y) * 0.35 - loopLane;
-    const c1x = from.x + Math.max(48, Math.abs(to.x - from.x) * 0.38) * direction;
-    const c2x = to.x - Math.max(48, Math.abs(to.x - from.x) * 0.38) * direction;
-    return `M ${from.x + 66 * direction} ${from.y} C ${c1x} ${from.y + vertical}, ${c2x} ${to.y + vertical}, ${to.x - 66 * direction} ${to.y}`;
+    const span = Math.abs(to.index - from.index);
+    const edgeBand = direction < 0 || span > 3;
+    const lane = edgeBand
+      ? (order % 2 === 0 ? 76 + (order % 5) * 34 : height - 86 - (order % 5) * 34)
+      : clampY((from.y + to.y) / 2 + (order % 2 === 0 ? -1 : 1) * (64 + (order % 4) * 24));
+    const bend = Math.max(72, Math.abs(to.x - from.x) * (edgeBand ? 0.48 : 0.34));
+    const c1x = from.x + bend * direction;
+    const c2x = to.x - bend * direction;
+    return `M ${from.x + 66 * direction} ${from.y} C ${c1x} ${lane}, ${c2x} ${lane}, ${to.x - 66 * direction} ${to.y}`;
   };
 
   return <section className="card process-map-card timelinepi-map-card">
-    <PanelHeader kicker="Process map" title="Timeline-style milestone flow" detail="Moving claim tokens can be clicked for queue descriptions and operational interpretation." />
+    <PanelHeader
+      kicker="Process map"
+      title="Timeline-style milestone flow"
+      detail={selectedCohort && selectedThreshold !== null
+        ? `Showing ${selectedCohort.caseCount.toLocaleString()} claims with 1 through ${selectedThreshold} touchpoint${selectedThreshold === 1 ? "" : "s"} and ${formatWasteDays(selectedCohort.wasteHours / 24)} of elapsed inter-event waste.`
+        : "Move the touchpoint selector to group similar claims and redraw the spaghetti graph."}
+    />
     <div className="milestone-reference-strip" aria-label="Milestone view legend">
       <img src="/milestone.png" alt="Milestone view timeline age legend" />
     </div>
     <div className="map-toolbar">
       <div className="map-motion-controls" aria-label="Map motion controls">
         <button className="icon-button" type="button" onClick={() => setPlaying(value => !value)} title={playing ? "Pause motion" : "Play motion"}>{playing ? "Pause" : "Play"}</button>
-        <button type="button" onClick={() => changeZoom(-0.12)} disabled={zoom <= 0.45}>-</button>
+        <button type="button" onClick={() => changeZoom(-0.12)} disabled={zoom <= 0.25}>-</button>
         <span>{Math.round(zoom * 100)}%</span>
         <button type="button" onClick={() => changeZoom(0.12)} disabled={zoom >= 1.55}>+</button>
-        <button type="button" onClick={() => setZoom(0.72)}>Fit</button>
+        <button type="button" onClick={fitMap}>Fit</button>
       </div>
+      <section className="journey-signal-strip" aria-label={`High-level journey signals through touchpoint ${selectedThreshold ?? "all"}`}>
+        <div className="journey-signal-heading"><span>Journey signals</span><b>Through TP {selectedThreshold ?? "all"}</b></div>
+        <div className="journey-signal-card rework">
+          <small>Back &amp; forth</small>
+          <strong title={journeySignals.backAndForth && journeySignals.backAndForthPartner ? `${journeySignals.backAndForth[0]} back and forth with ${journeySignals.backAndForthPartner.name}` : journeySignals.backAndForth?.[0]}>
+            {journeySignals.backAndForth && journeySignals.backAndForthPartner ? `${journeySignals.backAndForth[0]} ↔ ${journeySignals.backAndForthPartner.name}` : journeySignals.backAndForth?.[0] || "None detected"}
+          </strong>
+          <span>{journeySignals.backAndForthPartner ? `${journeySignals.backAndForthPartner.count.toLocaleString()} reciprocal movements` : "No two-way path"}</span>
+        </div>
+        <div className="journey-signal-card loop">
+          <small>Loop contributor</small>
+          <strong title={journeySignals.loop?.from}>{journeySignals.loop?.from || "None detected"}</strong>
+          <span>{journeySignals.loop ? `${journeySignals.loop.caseCount.toLocaleString()} looping claims` : "No self-loop"}</span>
+        </div>
+        <div className="journey-signal-card slow">
+          <small>Slowest handoff</small>
+          <strong title={journeySignals.slowest ? `${journeySignals.slowest.from} to ${journeySignals.slowest.to}` : undefined}>{journeySignals.slowest ? `${journeySignals.slowest.from} → ${journeySignals.slowest.to}` : "None detected"}</strong>
+          <span>{journeySignals.slowest ? formatHours(journeySignals.slowest.avgHours) : "No handoff"}</span>
+        </div>
+        <div className="journey-signal-card bottleneck">
+          <small>Top bottleneck</small>
+          <strong title={journeySignals.bottleneck ? `${journeySignals.bottleneck.from} to ${journeySignals.bottleneck.to}` : undefined}>{journeySignals.bottleneck ? `${journeySignals.bottleneck.from} → ${journeySignals.bottleneck.to}` : "None detected"}</strong>
+          <span>{journeySignals.bottleneck ? `${formatWasteDays(journeySignals.bottleneck.avgHours / 24 * journeySignals.bottleneck.caseCount)} impact` : "No impact"}</span>
+        </div>
+      </section>
     </div>
 
-    <div className="timelinepi-map-grid timelinepi-map-grid-full">
-      <div className="timelinepi-map-shell">
+    <div className="timelinepi-map-grid timelinepi-map-grid-full touchpoint-map-layout">
+      <div
+        className="timelinepi-map-shell"
+        ref={mapShellRef}
+        onWheel={event => {
+          event.preventDefault();
+          changeZoom(event.deltaY < 0 ? 0.08 : -0.08);
+        }}
+      >
         <div className="map-scaler" style={{ width: width * zoom, height: height * zoom }}>
           <svg className={`milestone-process-map timelinepi-process-map ${playing ? "is-playing" : "is-paused"}`} viewBox={`0 0 ${width} ${height}`} style={{ transform: `scale(${zoom})`, transformOrigin: "top left" }} role="img" aria-label="Timeline-style process map">
             <defs>
@@ -550,44 +749,60 @@ function MapPanel({ analysis }: { analysis: Analysis }) {
               <text x={endX} y={baseline + 80}>End</text>
             </g>
 
-            {visibleActivities.slice(0, 6).map((item, index) => {
+            {terminalActivities.starts.map((item, index) => {
               const node = nodeByName.get(item.name)!;
               const y = baseline - 60 - index * 22;
+              const id = `timelinepi-start-path-${index}`;
               const path = `M ${startX + 14} ${baseline} C ${node.x * 0.35} ${y}, ${node.x * 0.72} ${y}, ${node.x - 76} ${node.y}`;
-              return <path key={`start-${item.name}`} className="timelinepi-edge terminal-edge" d={path} markerEnd="url(#timelinepi-arrow)" />;
+              const tokenCount = Math.max(1, Math.min(4, Math.ceil(item.count / maxActivityCount * 4)));
+              return <g key={`start-${item.name}`} className="timelinepi-terminal-flow">
+                <path id={id} className="timelinepi-edge terminal-edge" d={path} markerEnd="url(#timelinepi-arrow)" />
+                {Array.from({ length: tokenCount }, (_, tokenIndex) => <circle key={`${id}-${tokenIndex}`} className="timelinepi-token fast terminal-token" r="4.2" filter="url(#timelinepi-token-shadow)">
+                  <animateMotion dur="2.8s" repeatCount="indefinite" begin={`${-(2.8 / tokenCount) * tokenIndex}s`}><mpath href={`#${id}`} /></animateMotion>
+                  <title>{`Claim movement from Start to ${item.name}`}</title>
+                </circle>)}
+              </g>;
             })}
 
-            {visibleActivities.slice(-6).map((item, index) => {
+            {terminalActivities.ends.map((item, index) => {
               const node = nodeByName.get(item.name)!;
               const y = baseline + 96 + index * 18;
+              const id = `timelinepi-end-path-${index}`;
               const path = `M ${node.x + 76} ${node.y} C ${node.x + 180} ${y}, ${endX - 150} ${y}, ${endX - 14} ${baseline + 48}`;
-              return <path key={`end-${item.name}`} className="timelinepi-edge terminal-edge" d={path} markerEnd="url(#timelinepi-arrow)" />;
+              const tokenCount = Math.max(1, Math.min(4, Math.ceil(item.count / maxActivityCount * 4)));
+              return <g key={`end-${item.name}`} className="timelinepi-terminal-flow">
+                <path id={id} className="timelinepi-edge terminal-edge" d={path} markerEnd="url(#timelinepi-arrow)" />
+                {Array.from({ length: tokenCount }, (_, tokenIndex) => <circle key={`${id}-${tokenIndex}`} className="timelinepi-token fast terminal-token" r="4.2" filter="url(#timelinepi-token-shadow)">
+                  <animateMotion dur="2.8s" repeatCount="indefinite" begin={`${-(2.8 / tokenCount) * tokenIndex}s`}><mpath href={`#${id}`} /></animateMotion>
+                  <title>{`Claim movement from ${item.name} to End`}</title>
+                </circle>)}
+              </g>;
             })}
 
             {topTransitions.map((transition, index) => {
               const from = nodeByName.get(transition.from);
               const to = nodeByName.get(transition.to);
               if (!from || !to) return null;
-              const isLoop = transition.from === transition.to || to.index < from.index;
+              const isSelfLoop = transition.from === transition.to;
+              const isLoop = isSelfLoop || to.index < from.index;
               const id = `timelinepi-path-${index}`;
-              const path = transitionPath(from, to, index, isLoop);
-              const strokeWidth = 0.7 + Math.sqrt(transition.caseCount / maxTransitionCount) * 4.8;
+              const path = transitionPath(from, to, index, isSelfLoop);
+              const strokeWidth = 0.45 + Math.sqrt(transition.caseCount / maxTransitionCount) * 2.6;
               const signal = makeMovementSignal(transition, isLoop);
-              return <g key={id} className={`timelinepi-edge-group ${isLoop ? "is-loop" : ""} ${activeSignal?.id === signal.id ? "is-selected" : ""}`}>
+              const tokenBands = buildClaimTokenBands(transition, maxTransitionCount);
+              return <g key={id} className={`timelinepi-edge-group ${isLoop ? "is-loop" : ""} ${isSelfLoop ? "is-self-loop" : ""} ${activeSignal?.id === signal.id ? "is-selected" : ""}`}>
                 <path id={id} className="timelinepi-edge" d={path} strokeWidth={strokeWidth} markerEnd={`url(#${isLoop ? "timelinepi-loop-arrow" : "timelinepi-arrow"})`} />
                 <path className="timelinepi-edge-hit" d={path} onClick={() => openTransition(signal)} />
                 <text className="timelinepi-edge-count"><textPath href={`#${id}`} startOffset="50%">{transition.caseCount.toLocaleString()}</textPath></text>
-                <circle className={`timelinepi-token ${signal.tone} speed-${signal.durationClass}`} r={isLoop ? 5.2 : 4.5} filter="url(#timelinepi-token-shadow)" onClick={event => { event.stopPropagation(); openTimeline(signal); }}>
-                  <animateMotion dur={`${motionDuration(transition.avgHours, signal.durationClass)}s`} repeatCount="indefinite" rotate="auto" begin={`${(index % 10) * 0.28}s`}>
-                    <mpath href={`#${id}`} />
-                  </animateMotion>
-                  <title>{signal.title}</title>
-                </circle>
-                <circle className="timelinepi-token-hit" r="14" onClick={event => { event.stopPropagation(); openTimeline(signal); }}>
-                  <animateMotion dur={`${motionDuration(transition.avgHours, signal.durationClass)}s`} repeatCount="indefinite" rotate="auto" begin={`${(index % 10) * 0.28}s`}>
-                    <mpath href={`#${id}`} />
-                  </animateMotion>
-                </circle>
+                {tokenBands.map((band, tokenIndex) => {
+                  const tokenDuration = Number(motionDuration(transition.avgHours, band));
+                  return <circle key={`${id}-token-${tokenIndex}`} className={`timelinepi-token ${band} speed-${band}`} r={isSelfLoop ? 5.8 : isLoop ? 5 : 4.2} filter="url(#timelinepi-token-shadow)" onClick={event => { event.stopPropagation(); openTimeline(signal); }}>
+                    <animateMotion dur={`${tokenDuration}s`} repeatCount="indefinite" rotate="auto" begin={`${-(tokenDuration / tokenBands.length) * tokenIndex}s`}>
+                      <mpath href={`#${id}`} />
+                    </animateMotion>
+                    <title>{`${signal.title} · ${band} claim-flow sample`}</title>
+                  </circle>;
+                })}
               </g>;
             })}
 
@@ -611,8 +826,12 @@ function MapPanel({ analysis }: { analysis: Analysis }) {
           </svg>
         </div>
       </div>
-
-
+      <TouchpointExplorer
+        groups={touchpointGroups}
+        totalCases={analysis.caseCount}
+        selectedTouchpoints={selectedThreshold}
+        onSelect={selectTouchpoints}
+      />
     </div>
 
     {activeSignal && selectedModal === "timeline" && <div className="timeline-modal-backdrop" role="dialog" aria-modal="true" aria-label="Timeline details">
@@ -701,6 +920,113 @@ function MapPanel({ analysis }: { analysis: Analysis }) {
       </div>
     </div>}
   </section>;
+}
+
+function TouchpointExplorer({
+  groups,
+  totalCases,
+  selectedTouchpoints,
+  onSelect,
+}: {
+  groups: Analysis["touchpointGroups"];
+  totalCases: number;
+  selectedTouchpoints: number | null;
+  onSelect: (touchpoints: number) => void;
+}) {
+  if (!groups.length) return <aside className="touchpoint-explorer"><div className="touchpoint-empty">No touchpoint groups are available.</div></aside>;
+  const defaultIndex = groups.length - 1;
+  const selectedIndex = Math.max(0, groups.findIndex(row => row.touchpoints === selectedTouchpoints));
+  const selected = groups[selectedIndex] || groups[0];
+  const included = groups.slice(0, selectedIndex + 1);
+  const includedCases = groups[0]?.caseCount ?? 0;
+  const includedShare = totalCases ? includedCases / totalCases * 100 : 0;
+  const includedWasteDays = included.reduce((sum, group) => sum + group.wasteHours, 0) / 24;
+  const averageWasteDays = includedCases ? includedWasteDays / includedCases : 0;
+  const maxCount = Math.max(...groups.map(row => row.caseCount), 1);
+  const uniformJourney = groups.every(row => row.caseCount === groups[0].caseCount);
+  const linePosition = `${(selectedIndex + 1) / groups.length * 100}%`;
+
+  return <aside className="touchpoint-explorer" aria-label="Process map journey depth by touchpoint">
+    <header>
+      <div><span>Journey depth</span><strong>Touchpoints in process</strong></div>
+      <button type="button" onClick={() => onSelect(groups[defaultIndex].touchpoints)} disabled={selectedIndex === defaultIndex}>Show all</button>
+    </header>
+    <div className="touchpoint-selection-summary">
+      <div><b>{groups[0].touchpoints}–{selected.touchpoints} touchpoint{selected.touchpoints === 1 ? "" : "s"}</b><span>{includedCases.toLocaleString()} claims · {includedShare.toFixed(1)}%</span></div>
+      <div className="touchpoint-waste"><small>Waste in days</small><strong>{formatWasteDays(includedWasteDays)}</strong><span>{formatWasteDays(averageWasteDays)} avg / claim</span></div>
+    </div>
+    <div className="touchpoint-chart" style={{ "--touchpoint-rows": groups.length, "--touchpoint-line": linePosition } as React.CSSProperties}>
+      <span className="touchpoint-threshold-line" aria-hidden="true" />
+      <div className="touchpoint-slider-column">
+        <input
+          aria-label="Show process through this touchpoint"
+          type="range"
+          min="0"
+          max={Math.max(groups.length - 1, 0)}
+          step="1"
+          value={selectedIndex}
+          disabled={groups.length <= 1}
+          onChange={event => onSelect(groups[Number(event.target.value)]?.touchpoints ?? groups[0].touchpoints)}
+        />
+      </div>
+      <div className="touchpoint-bars">
+        {groups.map((row, index) => {
+          const included = index <= selectedIndex;
+          const boundary = index === selectedIndex;
+          const width = Math.max(3, row.caseCount / maxCount * 100);
+          return <button
+            type="button"
+            key={row.touchpoints}
+            className={`${included ? "included" : ""} ${boundary ? "boundary" : ""}`}
+            onClick={() => onSelect(row.touchpoints)}
+            aria-pressed={included}
+          >
+            <span>{row.touchpoints}</span>
+            <i><em style={{ width: `${width}%` }} /></i>
+            <b>{row.caseCount.toLocaleString()}</b>
+            <small>{row.share.toFixed(1)}%</small>
+          </button>;
+        })}
+      </div>
+    </div>
+    <footer><span>{uniformJourney ? `All ${groups[0].caseCount.toLocaleString()} claims reach every uploaded touchpoint.` : "Waste = elapsed time between consecutive recorded events"}</span><b>Select a depth to redraw the process through that touchpoint.</b></footer>
+  </aside>;
+}
+
+function buildCumulativeTouchpointMap(groups: Analysis["touchpointGroups"], threshold: number) {
+  const included = groups.filter(group => group.touchpoints <= threshold);
+  const activities = new Map<string, number>();
+  const transitions = new Map<string, { from: string; to: string; count: number; caseCount: number; weightedHours: number; durationBands: DurationBands }>();
+  const caseCount = included[0]?.caseCount ?? 0;
+  let wasteHours = 0;
+
+  for (const group of included) {
+    wasteHours += group.wasteHours;
+    for (const activity of group.activities) activities.set(activity.name, (activities.get(activity.name) || 0) + activity.count);
+    for (const transition of group.transitions) {
+      const key = `${transition.from}\0${transition.to}`;
+      const current = transitions.get(key) || { from: transition.from, to: transition.to, count: 0, caseCount: 0, weightedHours: 0, durationBands: { fast: 0, steady: 0, slow: 0, late: 0 } };
+      current.count += transition.count;
+      current.caseCount += transition.caseCount;
+      current.weightedHours += transition.avgHours * transition.count;
+      for (const band of ["fast", "steady", "slow", "late"] as const) current.durationBands[band] += transition.durationBands?.[band] || 0;
+      transitions.set(key, current);
+    }
+  }
+
+  return {
+    caseCount,
+    wasteHours,
+    activities: [...activities.entries()].map(([name, count]) => ({ name, count })).sort((left, right) => right.count - left.count),
+    transitions: [...transitions.values()].map(transition => ({
+      from: transition.from,
+      to: transition.to,
+      count: transition.count,
+      caseCount: transition.caseCount,
+      avgHours: transition.count ? transition.weightedHours / transition.count : 0,
+      durationBands: transition.durationBands,
+    })).sort((left, right) => right.caseCount - left.caseCount || right.count - left.count),
+  };
 }
 
 type MapAnalysis = {
@@ -874,6 +1200,103 @@ function buildMapSvg(analysis: MapAnalysis): { svg: string; width: number; heigh
     width,
     height,
   };
+}
+
+function buildBreadthfirstMapLayout(
+  activities: { name: string; count: number }[],
+  transitions: { from: string; to: string; caseCount: number }[],
+) {
+  const names = new Set(activities.map(item => item.name));
+  const outgoing = new Map<string, string[]>();
+  const incoming = new Map(activities.map(item => [item.name, 0]));
+
+  for (const transition of transitions) {
+    if (transition.from === transition.to || !names.has(transition.from) || !names.has(transition.to)) continue;
+    const targets = outgoing.get(transition.from) || [];
+    if (!targets.includes(transition.to)) targets.push(transition.to);
+    outgoing.set(transition.from, targets);
+    incoming.set(transition.to, (incoming.get(transition.to) || 0) + 1);
+  }
+
+  const rank = new Map<string, number>();
+  const queue = activities
+    .filter(item => (incoming.get(item.name) || 0) === 0)
+    .sort((left, right) => right.count - left.count)
+    .map(item => item.name);
+  if (!queue.length && activities[0]) queue.push(activities[0].name);
+
+  for (const root of queue) rank.set(root, 0);
+  for (let cursor = 0; cursor < queue.length; cursor += 1) {
+    const source = queue[cursor];
+    const sourceRank = rank.get(source) || 0;
+    for (const target of outgoing.get(source) || []) {
+      if (rank.has(target)) continue;
+      rank.set(target, sourceRank + 1);
+      queue.push(target);
+    }
+  }
+
+  let nextRank = Math.max(0, ...rank.values()) + 1;
+  for (const activity of activities) {
+    if (rank.has(activity.name)) continue;
+    rank.set(activity.name, nextRank);
+    const branch = [activity.name];
+    for (let cursor = 0; cursor < branch.length; cursor += 1) {
+      const source = branch[cursor];
+      for (const target of outgoing.get(source) || []) {
+        if (rank.has(target)) continue;
+        rank.set(target, (rank.get(source) || nextRank) + 1);
+        branch.push(target);
+      }
+    }
+    nextRank = Math.max(nextRank + 1, ...rank.values()) + 1;
+  }
+
+  const columns = new Map<number, typeof activities>();
+  for (const activity of activities) {
+    const column = rank.get(activity.name) || 0;
+    const items = columns.get(column) || [];
+    items.push(activity);
+    columns.set(column, items);
+  }
+  for (const items of columns.values()) items.sort((left, right) => right.count - left.count);
+
+  const columnGap = 320;
+  const rowGap = 132;
+  const sidePadding = 170;
+  const verticalPadding = 110;
+  const maxRows = Math.max(1, ...[...columns.values()].map(items => items.length));
+  const maxRank = Math.max(0, ...rank.values());
+  const width = Math.max(1180, sidePadding * 2 + (maxRank + 1) * columnGap);
+  const height = Math.max(760, verticalPadding * 2 + Math.max(0, maxRows - 1) * rowGap + 160);
+  const baseline = height / 2;
+  const nodeByName = new Map<string, { name: string; count: number; index: number; x: number; y: number }>();
+
+  for (const [column, items] of columns) {
+    const columnHeight = Math.max(0, items.length - 1) * rowGap;
+    items.forEach((activity, row) => {
+      nodeByName.set(activity.name, {
+        ...activity,
+        index: column,
+        x: sidePadding + column * columnGap,
+        y: baseline - columnHeight / 2 + row * rowGap,
+      });
+    });
+  }
+
+  return { width, height, baseline, nodeByName };
+}
+
+function isProcessStartActivity(name: string) {
+  return /^(?:start|process start|claim start|started)$/i.test(name.trim());
+}
+
+function isProcessEndActivity(name: string) {
+  return /^(?:end|process end|claim end|ended)$/i.test(name.trim());
+}
+
+function isProcessTerminalActivity(name: string) {
+  return isProcessStartActivity(name) || isProcessEndActivity(name);
 }
 
 function Bottlenecks({ analysis }: { analysis: Analysis }) {
@@ -1362,12 +1785,19 @@ function countFor(tab: string, analysis: Analysis) {
   if (tab === "recommendations") return analysis.recommendations.length;
   if (tab === "objects") return analysis.objects.length;
   if (tab === "process-discovery") return DISCOVERY_FLOW.steps.length;
+  if (tab === "claims-discovery") return analysis.correlations.relationships.length;
+  if (tab === "quick-bottleneck") return "NEW";
   return 0;
 }
 
 function formatHours(hours: number) {
   if (hours >= 48) return `${(hours / 24).toFixed(1)} days`;
   return `${hours.toFixed(1)} hrs`;
+}
+
+function formatWasteDays(days: number) {
+  const digits = days >= 100 ? 0 : days >= 10 ? 1 : 2;
+  return `${days.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits })} days`;
 }
 
 function formatMapDays(hours: number) {
